@@ -192,7 +192,8 @@ class EspnDraftBridge:
             "pending_espn_player_id": (
                 recommendations[0]["espn_id"] if payload["on_clock"] and recommendations else None
             ),
+            "mock_command_ready": bool(payload["on_clock"] and recommendations),
             "received_at": datetime.now(timezone.utc).isoformat(),
-            "message": "Recommendations are precomputed; shadow mode does not submit picks.",
+            "message": "Recommendations are precomputed; the companion may submit only in mock mode.",
         }
         return self.state

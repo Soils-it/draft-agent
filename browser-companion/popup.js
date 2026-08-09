@@ -1,8 +1,9 @@
 "use strict";
 
 async function render() {
-  const settings = await chrome.storage.local.get({ enabled: false });
+  const settings = await chrome.storage.local.get({ enabled: false, autoPickMocks: false });
   document.querySelector("#enabled").checked = settings.enabled;
+  document.querySelector("#autoPickMocks").checked = settings.autoPickMocks;
   const status = settings.draftAgentLastStatus;
   document.querySelector("#status").textContent = status
     ? `${status.ok ? "Connected" : "Not connected"}: ${status.message}\n${status.at}`
@@ -11,7 +12,8 @@ async function render() {
 
 document.querySelector("#save").addEventListener("click", async () => {
   await chrome.storage.local.set({
-    enabled: document.querySelector("#enabled").checked
+    enabled: document.querySelector("#enabled").checked,
+    autoPickMocks: document.querySelector("#autoPickMocks").checked
   });
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ESPN Draft Agent Shadow Companion",
-  "version": "0.3.0",
-  "description": "Preloads ESPN draft projections into a local recommendation agent. Does not submit picks.",
+  "version": "0.4.0",
+  "description": "Preloads ESPN projections and supports guarded automatic picks in mock drafts.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "https://fantasy.espn.com/*",

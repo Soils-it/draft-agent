@@ -4,6 +4,11 @@
   const LOCAL_ENDPOINT = "http://127.0.0.1:8765/api/espn/snapshot";
   const SNAPSHOT_EVENT = "ESPN_DRAFT_AGENT_SNAPSHOT";
   const REQUEST_EVENT = "ESPN_DRAFT_AGENT_REQUEST";
+  const COMMAND_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK";
+  const RESULT_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK_RESULT";
+  const attemptedPicks = new Set();
+  let pendingTimer = null;
+  let pendingPickKey = null;
 
   async function saveStatus(status) {
     await chrome.storage.local.set({
@@ -12,7 +17,7 @@
   }
 
   async function sync(snapshot) {
-    const settings = await chrome.storage.local.get({ enabled: false });
+    const settings = await chrome.storage.local.get({ enabled: false, autoPickMocks: false });
     if (!settings.enabled) return;
     try {
       const response = await fetch(LOCAL_ENDPOINT, {
@@ -22,9 +27,12 @@
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Local bridge rejected the snapshot");
+      scheduleMockPick(snapshot, result, settings.autoPickMocks);
       await saveStatus({
         ok: true,
-        message: "Shadow snapshot accepted; real submission remains disabled.",
+        message: settings.autoPickMocks
+          ? "Projection snapshot accepted; mock auto-pick is armed."
+          : "Projection snapshot accepted; mock auto-pick is off.",
         overallPick: snapshot.overall_pick,
         matchRate: result.espn.match_rate
       });
@@ -32,6 +40,40 @@
       await saveStatus({ ok: false, message: String(error.message || error) });
     }
   }
+
+  function scheduleMockPick(snapshot, result, enabled) {
+    const recommendation = result?.espn?.pending_espn_player_id;
+    const pickKey = `${snapshot.league_id}:${snapshot.overall_pick}`;
+    if (!enabled || !snapshot.on_clock || !recommendation || attemptedPicks.has(pickKey)) {
+      if (pendingTimer) clearTimeout(pendingTimer);
+      pendingTimer = null;
+      pendingPickKey = null;
+      return;
+    }
+    if (pendingPickKey === pickKey) return;
+    if (pendingTimer) clearTimeout(pendingTimer);
+    pendingPickKey = pickKey;
+    const delay = Math.max(5, Number(result?.settings?.override_seconds) || 20) * 1000;
+    pendingTimer = setTimeout(() => {
+      attemptedPicks.add(pickKey);
+      pendingTimer = null;
+      pendingPickKey = null;
+      window.dispatchEvent(new CustomEvent(COMMAND_EVENT, {
+        detail: {
+          mock_only: true,
+          league_id: snapshot.league_id,
+          overall_pick: snapshot.overall_pick,
+          player_id: recommendation
+        }
+      }));
+    }, delay);
+  }
+
+  window.addEventListener(RESULT_EVENT, (event) => {
+    const result = event.detail;
+    if (!result) return;
+    saveStatus({ ok: result.ok === true, message: String(result.message || "Mock selection finished.") });
+  });
 
   window.addEventListener(SNAPSHOT_EVENT, (event) => {
     const snapshot = event.detail;

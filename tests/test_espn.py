@@ -49,6 +49,7 @@ class EspnBridgeTests(unittest.TestCase):
         self.assertEqual(state["historical_enrichment_rate"], 1)
         self.assertEqual(len(state["recommendations"]), 5)
         self.assertIsNotNone(state["pending_espn_player_id"])
+        self.assertTrue(state["mock_command_ready"])
 
     def test_rejects_duplicate_and_low_match_snapshots(self):
         duplicate = self.payload()
@@ -69,6 +70,7 @@ class EspnBridgeTests(unittest.TestCase):
         self.assertEqual(len(state["recommendations"]), 5)
         self.assertEqual(len(state["prequeue_espn_player_ids"]), 5)
         self.assertIsNone(state["pending_espn_player_id"])
+        self.assertFalse(state["mock_command_ready"])
 
     def test_current_catalog_supports_rookies_and_negative_dst_ids(self):
         payload = self.payload()

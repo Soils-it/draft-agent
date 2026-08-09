@@ -53,8 +53,11 @@ Rookies, kickers, and D/ST entries no longer depend on a historical ID match.
 
 Recommendations are calculated continuously for the user's next selection,
 including while another team is on the clock. This makes a five-player queue
-available before the turn begins. The bridge still intentionally exposes no
-submit-pick operation; automated selection is the next mock-only phase.
+available before the turn begins. Automatic selection is disabled by default
+and can be armed separately in the companion. It waits for the configured
+override period and then revalidates the league, pick number, turn ownership,
+player availability, and ESPN mock status before sending exactly one pick.
+Real-league submission is hard-blocked in the page-context controller.
 
 `browser-companion/` contains an optional unpacked extension for sending those
 snapshots. Its read-only observer was verified against ESPN's 2026 mock-draft
@@ -110,9 +113,8 @@ settings.
 
 ## Next phase: ESPN integration
 
-Add an adapter that reads the visible ESPN draft state from an already signed-in
-browser session and submits a selected player only after verifying the league,
-team, pick number, and available-player list. Passwords and session cookies must
-never be stored by this project. Real selection should remain disabled until
-the adapter passes ESPN mock-draft tests, timeout tests, and duplicate-pick
-tests.
+Validate the guarded controller through repeated ESPN mock drafts, including
+timeout, manual override, stale-state, and duplicate-pick scenarios. Passwords
+and session cookies must never be stored by this project. Real selection remains
+disabled until that evidence is complete and a separate real-draft safety review
+is performed.

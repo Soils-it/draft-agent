@@ -3,6 +3,8 @@
 
   const SNAPSHOT_EVENT = "ESPN_DRAFT_AGENT_SNAPSHOT";
   const REQUEST_EVENT = "ESPN_DRAFT_AGENT_REQUEST";
+  const COMMAND_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK";
+  const RESULT_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK_RESULT";
 
   function findDraftStore() {
     const playerLink = document.querySelector("a.player-news");
@@ -87,7 +89,48 @@
     }
   }
 
+  function emitResult(detail) {
+    window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail }));
+  }
+
+  function executeMockPick(event) {
+    const command = event.detail;
+    const store = findDraftStore();
+    const draft = store?.draft;
+    const fail = (message) => emitResult({ ok: false, message });
+    if (!command?.mock_only || !draft) return fail("Draft state is unavailable.");
+    if (draft.isMockLeague !== true) return fail("Selection blocked: this is not an ESPN mock draft.");
+    if (String(draft.leagueId || "") !== String(command.league_id || "")) {
+      return fail("Selection blocked: league changed.");
+    }
+    if (draft.pickIndex + 1 !== Number(command.overall_pick)) {
+      return fail("Selection blocked: the pick is stale.");
+    }
+    if (typeof draft.isCurrentlyMyPick !== "function" || !draft.isCurrentlyMyPick()) {
+      return fail("Selection blocked: you are no longer on the clock.");
+    }
+    const pool = Array.from(
+      { length: store.playerPool.length },
+      (_, index) => store.playerPool[index]
+    );
+    const selected = pool.find((player) => String(player?.id) === String(command.player_id));
+    if (!selected || selected.available !== true) {
+      return fail("Selection blocked: the recommended player is unavailable.");
+    }
+    if (typeof draft.sendSelectMessage !== "function") {
+      return fail("Selection blocked: ESPN's mock selection control is unavailable.");
+    }
+    draft.sendSelectMessage(selected.id);
+    emitResult({
+      ok: true,
+      message: `Mock pick sent: ${selected.fullName || selected.name}`,
+      overall_pick: draft.pickIndex + 1,
+      player_id: String(selected.id)
+    });
+  }
+
   window.addEventListener(REQUEST_EVENT, emitSnapshot);
+  window.addEventListener(COMMAND_EVENT, executeMockPick);
   setInterval(emitSnapshot, 2000);
   emitSnapshot();
 })();

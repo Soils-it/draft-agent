@@ -1,8 +1,9 @@
 # ESPN Shadow Companion
 
 This unpacked Manifest V3 browser extension observes an ESPN fantasy draft page
-and posts snapshots to the local agent at `127.0.0.1:8765`. It has no pick
-submission code.
+and posts snapshots to the local agent at `127.0.0.1:8765`. Its optional
+automatic controller can submit picks only when ESPN's live draft store marks
+the league as a mock draft.
 
 The observer runs in ESPN's page context because player IDs are not present in
 normal DOM attributes. It locates the React draft store from a rendered player,
@@ -26,7 +27,10 @@ currently on the clock.
 3. Choose **Load unpacked** and select this directory.
 4. Open an ESPN mock draft.
 5. Enable syncing. Confirm the dashboard says **Connected in shadow mode**.
+6. To test automatic drafting, separately enable **automatic picks in mock
+   drafts**. Leave it off for observation-only use.
 
-Do not enable real selection based on this companion. A future implementation
-must add league/team verification, stale-state protection, a server-issued
-one-time command, submission confirmation, and mock-draft evidence first.
+The controller waits for the configured override period. A manual ESPN pick
+during that window makes its command stale and therefore harmless. Immediately
+before sending, it checks mock status, league ID, overall pick, turn ownership,
+and player availability. Real-draft selection is intentionally blocked.

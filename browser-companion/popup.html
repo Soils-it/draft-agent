@@ -14,10 +14,11 @@
   </style>
 </head>
 <body>
-  <h1>ESPN Shadow Companion</h1>
-  <p class="warning">Observation only. This extension cannot submit picks.</p>
-  <label><input id="enabled" type="checkbox"> Enable shadow snapshot syncing</label>
-  <p>Reads ESPN's in-page draft state every two seconds. It sends only draft identifiers, pick state, and ESPN player IDs to the local agent.</p>
+  <h1>ESPN Draft Companion</h1>
+  <p class="warning">Automatic selection is hard-blocked outside ESPN mock drafts.</p>
+  <label><input id="enabled" type="checkbox"> Enable projection snapshot syncing</label>
+  <label><input id="autoPickMocks" type="checkbox"> Enable automatic picks in mock drafts</label>
+  <p>Recommendations are prepared between turns. On your turn, automatic mode waits for the local override period before submitting.</p>
   <button id="save">Save and sync</button>
   <div id="status">Not configured</div>
   <script src="popup.js"></script>
