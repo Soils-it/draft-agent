@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from typing import Any
 
 from .data import demo_players
+from .providers import NflverseProvider
 from .session import DraftSession
 
 
 SESSION = DraftSession(demo_players())
 OVERRIDE_SECONDS = 20
+DATA_SOURCE: dict[str, object] = {
+    "name": "generated demo data",
+    "season": None,
+    "cached": False,
+}
 
 
 def _state_payload() -> dict[str, object]:
@@ -21,6 +28,7 @@ def _state_payload() -> dict[str, object]:
         "user_slot": SESSION.config.user_slot,
         "override_seconds": OVERRIDE_SECONDS,
     }
+    payload["data_source"] = DATA_SOURCE
     return payload
 
 
@@ -70,7 +78,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        global OVERRIDE_SECONDS, SESSION
+        global DATA_SOURCE, OVERRIDE_SECONDS, SESSION
         try:
             body = self._body()
             if self.path == "/api/pick":
@@ -88,6 +96,19 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     SESSION = DraftSession(
                         demo_players(), replace(SESSION.config, user_slot=slot)
                     )
+            elif self.path == "/api/data/nflverse":
+                season = int(body.get("season", date.today().year - 1))
+                if not 1999 <= season <= date.today().year:
+                    raise ValueError("season is outside the available nflverse range")
+                result = NflverseProvider().load(season, bool(body.get("refresh", False)))
+                SESSION = DraftSession(result.players, SESSION.config)
+                DATA_SOURCE = {
+                    "name": result.source,
+                    "season": result.season,
+                    "cached": result.cached,
+                    "fetched_at": result.fetched_at,
+                    "warning": "Historical baseline only; not a current expert projection.",
+                }
             elif self.path == "/api/reset":
                 SESSION = DraftSession(demo_players(), SESSION.config)
             else:

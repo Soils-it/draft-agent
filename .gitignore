@@ -17,6 +17,7 @@ state/draft-state.json
 screenshots/
 logs/
 *.log
+.cache/
 
 # Python
 __pycache__/

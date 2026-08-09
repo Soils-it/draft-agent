@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "espn-fantasy-draft-agent"
 version = "0.1.0"
 description = "Local ESPN fantasy football draft recommendation engine"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]

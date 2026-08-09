@@ -25,7 +25,7 @@
   </style>
 </head>
 <body>
-  <header><div><h1>Draft Room</h1><div class="sub">Local simulation · generated players · no ESPN connection</div></div><div id="pickStatus" class="status">Loading…</div></header>
+  <header><div><h1>Draft Room</h1><div class="sub" id="sourceStatus">Local simulation · no ESPN connection</div></div><div id="pickStatus" class="status">Loading…</div></header>
   <main>
     <section>
       <div class="panel">
@@ -38,6 +38,7 @@
     </section>
     <aside>
       <div class="panel"><h2>Your roster</h2><div id="roster" class="roster"></div></div>
+      <div class="panel" style="margin-top:18px"><h2>Player data</h2><label>Baseline season <input id="dataSeason" type="number" min="1999" max="2100" value="2025"></label><br><br><button id="loadNflverse">Load free nflverse data</button><div class="explain">Uses prior results as a baseline. It is not a current-season projection or ADP feed.</div></div>
       <div class="panel" style="margin-top:18px"><h2>Draft settings</h2><label>Draft slot <input id="draftSlot" type="number" min="1" max="12"></label><br><br><label>Override seconds <input id="overrideSeconds" type="number" min="5" max="120"></label><br><br><button id="saveSettings">Apply settings</button><div class="explain">Changing the draft slot resets the mock draft.</div></div>
       <div class="panel weights" style="margin-top:18px"><h2>Strategy weights</h2><div id="weights"></div><button id="saveWeights">Apply strategy</button></div>
     </aside>
@@ -46,7 +47,7 @@
     const labels={projection:'Projection',vor:'Value over replacement',scarcity:'Tier scarcity',roster_need:'Roster need',gone_next_pick:'Gone by next pick',upside:'Upside',risk:'Risk penalty'};
     let state, paused=false, seconds=20, timer;
     const api=async(path,body)=>{const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw new Error(data.error||'Request failed');return data};
-    function render(s){state=s;document.querySelector('#pickStatus').textContent=s.is_complete?'Draft complete':`Round ${s.round} · Pick ${s.current_pick}`;document.querySelector('#clockSub').textContent=`Draft slot ${s.user_slot} · next selection ${s.next_user_pick??'—'}`;
+    function render(s){state=s;document.querySelector('#pickStatus').textContent=s.is_complete?'Draft complete':`Round ${s.round} · Pick ${s.current_pick}`;document.querySelector('#clockSub').textContent=`Draft slot ${s.user_slot} · next selection ${s.next_user_pick??'—'}`;document.querySelector('#sourceStatus').textContent=`${s.data_source.name}${s.data_source.season?' · '+s.data_source.season:''}${s.data_source.cached?' · cached':''} · no ESPN connection`;
       const rec=document.querySelector('#recommendations');rec.innerHTML=s.recommendations.length?`<table><thead><tr><th>Player</th><th>Proj</th><th>ADP</th><th>Score</th><th></th></tr></thead><tbody>${s.recommendations.map((p,i)=>`<tr><td><strong>${i+1}. ${p.name}</strong> <span class="pill">${p.position}</span><div class="explain">${labels[Object.entries(p.components).filter(([k])=>k!=='risk').sort((a,b)=>b[1]-a[1])[0][0]]} leads · ${(p.components.gone_next_pick*100).toFixed(0)}% chance gone</div></td><td>${p.projected_points}</td><td>${p.adp}</td><td>${p.draft_score}</td><td><button onclick="pick('${p.id}','override')">Pick</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No recommendation available.</div>';
       document.querySelector('#roster').innerHTML=s.roster.length?s.roster.map(p=>`<div><strong>${p.position}</strong> · ${p.name}<div class="explain">${p.projected_points} projected</div></div>`).join(''):'<div class="empty">No players yet</div>';
       document.querySelector('#recent').innerHTML=s.recent_picks.map(p=>`<span class="pill">${p.overall}: ${p.player} (${p.position})</span> `).join('');
@@ -60,6 +61,7 @@
     document.querySelector('#reset').onclick=async()=>render(await api('/api/reset',{}));
     document.querySelector('#saveWeights').onclick=async()=>{const body={};document.querySelectorAll('[data-weight]').forEach(el=>body[el.dataset.weight]=Number(el.value));render(await api('/api/weights',body))};
     document.querySelector('#saveSettings').onclick=async()=>{try{render(await api('/api/settings',{user_slot:Number(document.querySelector('#draftSlot').value),override_seconds:Number(document.querySelector('#overrideSeconds').value)}))}catch(e){alert(e.message)}};
+    document.querySelector('#loadNflverse').onclick=async()=>{const button=document.querySelector('#loadNflverse');button.disabled=true;button.textContent='Loading…';try{render(await api('/api/data/nflverse',{season:Number(document.querySelector('#dataSeason').value)}))}catch(e){alert(e.message)}finally{button.disabled=false;button.textContent='Load free nflverse data'}};
     load().catch(e=>document.querySelector('#pickStatus').textContent=e.message);
   </script>
 </body>
