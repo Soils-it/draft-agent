@@ -17,6 +17,8 @@ def _range_score(value: float, ranges: tuple[tuple[float, float, float], ...]) -
 
 def projected_points(player: Player) -> float:
     """Calculate projected points from season-long stat projections."""
+    if player.projected_points_override is not None:
+        return round(player.projected_points_override, 3)
     points = sum(player.stats.get(key, 0.0) * rate for key, rate in SCORING_RATES.items())
     if player.position == "DST":
         games = max(player.stats.get("games", 17), 1)

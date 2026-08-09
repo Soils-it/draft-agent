@@ -44,11 +44,17 @@ current projections, injuries, depth charts, or true market ADP.
 
 ## ESPN bridge status
 
-The server exposes `POST /api/espn/snapshot` for a future browser companion.
-It accepts browser-observed league/draft identifiers, overall pick, on-clock
-state, available ESPN player IDs, and roster ESPN player IDs. The bridge joins
-those IDs through nflverse, rejects duplicates and low match rates, and returns
-shadow recommendations. It intentionally exposes no submit-pick operation yet.
+The server exposes `POST /api/espn/snapshot` for the browser companion. It
+accepts browser-observed league/draft identifiers, draft slot, overall pick,
+on-clock state, available and roster ESPN IDs, plus ESPN's current top-350
+rankings and projected fantasy points. The bridge uses those current projections
+for every player and enriches matching IDs with nflverse historical risk/upside.
+Rookies, kickers, and D/ST entries no longer depend on a historical ID match.
+
+Recommendations are calculated continuously for the user's next selection,
+including while another team is on the clock. This makes a five-player queue
+available before the turn begins. The bridge still intentionally exposes no
+submit-pick operation; automated selection is the next mock-only phase.
 
 `browser-companion/` contains an optional unpacked extension for sending those
 snapshots. Its read-only observer was verified against ESPN's 2026 mock-draft
@@ -63,6 +69,17 @@ Example payload using placeholder IDs:
   "draft_id": "EXAMPLE_DRAFT",
   "overall_pick": 6,
   "on_clock": true,
+  "user_slot": 6,
+  "player_catalog": [
+    {
+      "id": "1001",
+      "name": "Example Player",
+      "team": "BUF",
+      "position": "RB",
+      "rank": 1,
+      "projected_points": 287.4
+    }
+  ],
   "available_player_ids": ["1001", "1002"],
   "roster_player_ids": []
 }

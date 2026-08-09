@@ -6,15 +6,18 @@ submission code.
 
 The observer runs in ESPN's page context because player IDs are not present in
 normal DOM attributes. It locates the React draft store from a rendered player,
-then copies only the mock league ID, current pick, on-clock status, available
-ESPN player IDs, and the user's roster IDs. It never copies ESPN security
-tokens, member identifiers, cookies, or credentials. The local bridge
-independently rejects malformed snapshots, duplicate player IDs, and mappings
-below 50%.
+then copies only the mock league ID, draft slot, current pick, on-clock status,
+available and roster ESPN IDs, and the public draft-board fields needed by the
+ranking engine: player name, NFL team, position, editorial rank, and projected
+fantasy points. It never copies ESPN security tokens, member identifiers,
+cookies, or credentials. The local bridge independently validates every entry
+and rejects malformed snapshots or duplicate player IDs.
 
 The available set is limited to ESPN's top 350 editorial draft ranks. This
 avoids flooding the recommendation engine with hundreds of undrafted free
-agents while retaining more than a full 12-team, 16-round draft pool.
+agents while retaining more than a full 12-team, 16-round draft pool. The local
+agent precomputes five choices for the next user pick even when the user is not
+currently on the clock.
 
 ## Development installation
 

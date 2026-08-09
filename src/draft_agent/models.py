@@ -16,6 +16,7 @@ class Player:
     risk: float = 0.2
     status: str = "ACTIVE"
     external_ids: dict[str, str] = field(default_factory=dict)
+    projected_points_override: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {

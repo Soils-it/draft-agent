@@ -40,6 +40,13 @@ class ScoringTests(unittest.TestCase):
         )
         self.assertEqual(projected_points(player), 0)
 
+    def test_current_projection_override_takes_precedence(self):
+        player = Player(
+            "p6", "Current Projection", "T06", "RB", 1,
+            {"rushing_yards": 1}, projected_points_override=287.4567,
+        )
+        self.assertEqual(projected_points(player), 287.457)
+
 
 if __name__ == "__main__":
     unittest.main()

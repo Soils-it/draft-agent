@@ -61,7 +61,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 64_000:
+        if length > 256_000:
             raise ValueError("request body is too large")
         return json.loads(self.rfile.read(length) or b"{}")
 
