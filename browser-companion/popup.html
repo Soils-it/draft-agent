@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Draft Agent Companion</title>
+  <style>
+    body { width:360px; margin:0; padding:16px; background:#0d1711; color:#eef7f0; font:13px/1.4 system-ui,sans-serif; }
+    h1 { font-size:17px; margin:0 0 4px; } p { color:#9fb0a4; margin:0 0 13px; }
+    label { display:block; margin:10px 0; } input[type=text] { width:100%; box-sizing:border-box; margin-top:3px; padding:7px; background:#17251c; color:white; border:1px solid #36503e; border-radius:5px; }
+    button { padding:8px 11px; color:white; background:#225335; border:1px solid #3d7a50; border-radius:6px; cursor:pointer; }
+    #status { margin-top:12px; padding:9px; background:#17251c; border-radius:6px; white-space:pre-wrap; }
+    .warning { color:#facc15; }
+  </style>
+</head>
+<body>
+  <h1>ESPN Shadow Companion</h1>
+  <p class="warning">Observation only. This extension cannot submit picks.</p>
+  <label><input id="enabled" type="checkbox"> Enable snapshot syncing</label>
+  <label>Overall-pick selector<input id="overallPickSelector" type="text" placeholder="Configure after mock-draft inspection"></label>
+  <label>On-clock selector<input id="onClockSelector" type="text"></label>
+  <label>Available-player selector<input id="availablePlayerSelector" type="text"></label>
+  <label>Roster-player selector<input id="rosterPlayerSelector" type="text"></label>
+  <label>Player-ID attribute<input id="playerIdAttribute" type="text" value="data-player-id"></label>
+  <button id="save">Save and sync</button>
+  <div id="status">Not configured</div>
+  <script src="popup.js"></script>
+</body>
+</html>

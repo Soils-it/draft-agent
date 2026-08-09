@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "ESPN Draft Agent Shadow Companion",
+  "version": "0.1.0",
+  "description": "Sends validated ESPN mock-draft state to a local draft agent. Does not submit picks.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://fantasy.espn.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://fantasy.espn.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ESPN Draft Agent",
+    "default_popup": "popup.html"
+  }
+}
