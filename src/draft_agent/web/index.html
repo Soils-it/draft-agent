@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Draft Room — Local Agent</title>
+  <style>
+    :root { color-scheme: dark; --bg:#09110d; --panel:#111c16; --line:#263a2d; --green:#86efac; --muted:#98aa9f; --gold:#facc15; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:15px/1.45 system-ui,sans-serif; background:radial-gradient(circle at 15% 0,#173622 0,var(--bg) 32%); color:#edf8f0; }
+    header { padding:24px 28px 14px; display:flex; justify-content:space-between; align-items:end; border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:26px; letter-spacing:-.03em; } h2 { font-size:14px; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); }
+    .sub,.muted { color:var(--muted); } .status { color:var(--green); font-weight:700; }
+    main { display:grid; grid-template-columns:minmax(520px,1.5fr) minmax(310px,.8fr); gap:18px; padding:18px 28px 32px; }
+    .panel { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 12px 35px #0005; }
+    .clock { display:flex; align-items:center; justify-content:space-between; padding:16px; background:#17251c; border-radius:10px; margin-bottom:16px; }
+    #countdown { font-size:31px; font-variant-numeric:tabular-nums; color:var(--gold); font-weight:800; }
+    table { width:100%; border-collapse:collapse; } th { text-align:left; color:var(--muted); font-size:12px; } td,th { padding:10px 8px; border-bottom:1px solid var(--line); }
+    tr:first-child td { background:#183122; } button { border:1px solid #3d644b; background:#1d3c29; color:white; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:650; }
+    button:hover { background:#285037; } button.secondary { background:transparent; } .pill { padding:3px 7px; border-radius:999px; background:#22372a; font-size:12px; }
+    .controls { display:flex; gap:9px; align-items:center; flex-wrap:wrap; } .weights label { display:grid; grid-template-columns:130px 1fr 34px; gap:8px; margin:9px 0; align-items:center; }
+    input[type=range] { accent-color:#4ade80; width:100%; } .roster { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; } .roster div { background:#17251c; padding:8px 10px; border-radius:7px; }
+    .explain { color:var(--muted); font-size:12px; margin-top:3px; } .empty { padding:18px 0; color:var(--muted); }
+    @media(max-width:900px){ main{grid-template-columns:1fr;padding:14px} header{padding:20px 14px} }
+  </style>
+</head>
+<body>
+  <header><div><h1>Draft Room</h1><div class="sub">Local simulation · generated players · no ESPN connection</div></div><div id="pickStatus" class="status">Loading…</div></header>
+  <main>
+    <section>
+      <div class="panel">
+        <div class="clock"><div><strong id="clockTitle">Preparing recommendation</strong><div class="muted" id="clockSub"></div></div><div id="countdown">—</div></div>
+        <div class="controls"><button id="pause">Pause auto-pick</button><button class="secondary" id="reset">Reset mock draft</button><span id="mode" class="pill">AUTO</span></div>
+        <h2>Best available</h2>
+        <div id="recommendations"></div>
+      </div>
+      <div class="panel" style="margin-top:18px"><h2>Recent picks</h2><div id="recent"></div></div>
+    </section>
+    <aside>
+      <div class="panel"><h2>Your roster</h2><div id="roster" class="roster"></div></div>
+      <div class="panel weights" style="margin-top:18px"><h2>Strategy weights</h2><div id="weights"></div><button id="saveWeights">Apply strategy</button></div>
+    </aside>
+  </main>
+  <script>
+    const labels={projection:'Projection',vor:'Value over replacement',scarcity:'Tier scarcity',roster_need:'Roster need',gone_next_pick:'Gone by next pick',upside:'Upside',risk:'Risk penalty'};
+    let state, paused=false, seconds=20, timer;
+    const api=async(path,body)=>{const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw new Error(data.error||'Request failed');return data};
+    function render(s){state=s;document.querySelector('#pickStatus').textContent=s.is_complete?'Draft complete':`Round ${s.round} · Pick ${s.current_pick}`;document.querySelector('#clockSub').textContent=`Draft slot ${s.user_slot} · next selection ${s.next_user_pick??'—'}`;
+      const rec=document.querySelector('#recommendations');rec.innerHTML=s.recommendations.length?`<table><thead><tr><th>Player</th><th>Proj</th><th>ADP</th><th>Score</th><th></th></tr></thead><tbody>${s.recommendations.map((p,i)=>`<tr><td><strong>${i+1}. ${p.name}</strong> <span class="pill">${p.position}</span><div class="explain">${labels[Object.entries(p.components).filter(([k])=>k!=='risk').sort((a,b)=>b[1]-a[1])[0][0]]} leads · ${(p.components.gone_next_pick*100).toFixed(0)}% chance gone</div></td><td>${p.projected_points}</td><td>${p.adp}</td><td>${p.draft_score}</td><td><button onclick="pick('${p.id}','override')">Pick</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No recommendation available.</div>';
+      document.querySelector('#roster').innerHTML=s.roster.length?s.roster.map(p=>`<div><strong>${p.position}</strong> · ${p.name}<div class="explain">${p.projected_points} projected</div></div>`).join(''):'<div class="empty">No players yet</div>';
+      document.querySelector('#recent').innerHTML=s.recent_picks.map(p=>`<span class="pill">${p.overall}: ${p.player} (${p.position})</span> `).join('');
+      const weights=document.querySelector('#weights');if(!weights.children.length)weights.innerHTML=Object.entries(s.weights).map(([k,v])=>`<label>${labels[k]}<input data-weight="${k}" type="range" min="0" max="1" step=".01" value="${v}"><output>${v.toFixed(2)}</output></label>`).join('');
+      document.querySelectorAll('[data-weight]').forEach(el=>el.oninput=()=>el.nextElementSibling.value=Number(el.value).toFixed(2));restartClock(); }
+    function restartClock(){clearInterval(timer);seconds=20;const title=document.querySelector('#clockTitle'),count=document.querySelector('#countdown');if(state.is_complete){title.textContent='Mock draft complete';count.textContent='✓';return}if(paused){title.textContent='Auto-pick paused';count.textContent='—';return}title.textContent=`Pending: ${state.recommendations[0]?.name??'none'}`;count.textContent=seconds+'s';timer=setInterval(()=>{seconds--;count.textContent=seconds+'s';if(seconds<=0){clearInterval(timer);if(state.recommendations[0])pick(state.recommendations[0].id,'auto')}},1000)}
+    async function pick(id,source){try{render(await api('/api/pick',{player_id:id,source}))}catch(e){alert(e.message);await load()}} window.pick=pick;
+    async function load(){render(await api('/api/state'))}
+    document.querySelector('#pause').onclick=()=>{paused=!paused;document.querySelector('#pause').textContent=paused?'Resume auto-pick':'Pause auto-pick';document.querySelector('#mode').textContent=paused?'PAUSED':'AUTO';restartClock()};
+    document.querySelector('#reset').onclick=async()=>render(await api('/api/reset',{}));
+    document.querySelector('#saveWeights').onclick=async()=>{const body={};document.querySelectorAll('[data-weight]').forEach(el=>body[el.dataset.weight]=Number(el.value));render(await api('/api/weights',body))};
+    load().catch(e=>document.querySelector('#pickStatus').textContent=e.message);
+  </script>
+</body>
+</html>
