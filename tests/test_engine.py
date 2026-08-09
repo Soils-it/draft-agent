@@ -4,6 +4,7 @@ from draft_agent.config import LeagueConfig
 from draft_agent.data import demo_players
 from draft_agent.engine import DraftEngine
 from draft_agent.session import DraftSession
+from draft_agent.server import validate_settings
 
 
 class EngineTests(unittest.TestCase):
@@ -48,6 +49,13 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(roster), self.config.roster_size)
         for position, cap in self.config.position_caps.items():
             self.assertLessEqual(sum(player.position == position for player in roster), cap)
+
+    def test_runtime_settings_validation(self):
+        self.assertEqual(validate_settings({"user_slot": 12, "override_seconds": 30}, 6, 20, 12), (12, 30))
+        with self.assertRaises(ValueError):
+            validate_settings({"user_slot": 0}, 6, 20, 12)
+        with self.assertRaises(ValueError):
+            validate_settings({"override_seconds": 3}, 6, 20, 12)
 
 
 if __name__ == "__main__":

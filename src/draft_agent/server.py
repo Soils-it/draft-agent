@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -11,6 +12,28 @@ from .session import DraftSession
 
 
 SESSION = DraftSession(demo_players())
+OVERRIDE_SECONDS = 20
+
+
+def _state_payload() -> dict[str, object]:
+    payload = SESSION.as_dict()
+    payload["settings"] = {
+        "user_slot": SESSION.config.user_slot,
+        "override_seconds": OVERRIDE_SECONDS,
+    }
+    return payload
+
+
+def validate_settings(
+    values: dict[str, Any], current_slot: int, current_seconds: int, teams: int
+) -> tuple[int, int]:
+    slot = int(values.get("user_slot", current_slot))
+    seconds = int(values.get("override_seconds", current_seconds))
+    if not 1 <= slot <= teams:
+        raise ValueError(f"user_slot must be between 1 and {teams}")
+    if not 5 <= seconds <= 120:
+        raise ValueError("override_seconds must be between 5 and 120")
+    return slot, seconds
 
 
 class DraftRequestHandler(BaseHTTPRequestHandler):
@@ -33,7 +56,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/api/state":
-            self._json(SESSION.as_dict())
+            self._json(_state_payload())
             return
         if self.path in {"/", "/index.html"}:
             body = files("draft_agent").joinpath("web/index.html").read_bytes()
@@ -47,19 +70,30 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        global SESSION
+        global OVERRIDE_SECONDS, SESSION
         try:
             body = self._body()
             if self.path == "/api/pick":
                 SESSION.make_user_pick(str(body["player_id"]), str(body.get("source", "manual")))
             elif self.path == "/api/weights":
                 SESSION.engine.weights.update(body)
+            elif self.path == "/api/settings":
+                slot, OVERRIDE_SECONDS = validate_settings(
+                    body,
+                    SESSION.config.user_slot,
+                    OVERRIDE_SECONDS,
+                    SESSION.config.teams,
+                )
+                if slot != SESSION.config.user_slot:
+                    SESSION = DraftSession(
+                        demo_players(), replace(SESSION.config, user_slot=slot)
+                    )
             elif self.path == "/api/reset":
                 SESSION = DraftSession(demo_players(), SESSION.config)
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
-            self._json(SESSION.as_dict())
+            self._json(_state_payload())
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 

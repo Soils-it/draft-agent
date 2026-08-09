@@ -38,6 +38,7 @@
     </section>
     <aside>
       <div class="panel"><h2>Your roster</h2><div id="roster" class="roster"></div></div>
+      <div class="panel" style="margin-top:18px"><h2>Draft settings</h2><label>Draft slot <input id="draftSlot" type="number" min="1" max="12"></label><br><br><label>Override seconds <input id="overrideSeconds" type="number" min="5" max="120"></label><br><br><button id="saveSettings">Apply settings</button><div class="explain">Changing the draft slot resets the mock draft.</div></div>
       <div class="panel weights" style="margin-top:18px"><h2>Strategy weights</h2><div id="weights"></div><button id="saveWeights">Apply strategy</button></div>
     </aside>
   </main>
@@ -50,13 +51,15 @@
       document.querySelector('#roster').innerHTML=s.roster.length?s.roster.map(p=>`<div><strong>${p.position}</strong> · ${p.name}<div class="explain">${p.projected_points} projected</div></div>`).join(''):'<div class="empty">No players yet</div>';
       document.querySelector('#recent').innerHTML=s.recent_picks.map(p=>`<span class="pill">${p.overall}: ${p.player} (${p.position})</span> `).join('');
       const weights=document.querySelector('#weights');if(!weights.children.length)weights.innerHTML=Object.entries(s.weights).map(([k,v])=>`<label>${labels[k]}<input data-weight="${k}" type="range" min="0" max="1" step=".01" value="${v}"><output>${v.toFixed(2)}</output></label>`).join('');
+      const slot=document.querySelector('#draftSlot'),override=document.querySelector('#overrideSeconds');if(document.activeElement!==slot)slot.value=s.settings.user_slot;if(document.activeElement!==override)override.value=s.settings.override_seconds;
       document.querySelectorAll('[data-weight]').forEach(el=>el.oninput=()=>el.nextElementSibling.value=Number(el.value).toFixed(2));restartClock(); }
-    function restartClock(){clearInterval(timer);seconds=20;const title=document.querySelector('#clockTitle'),count=document.querySelector('#countdown');if(state.is_complete){title.textContent='Mock draft complete';count.textContent='✓';return}if(paused){title.textContent='Auto-pick paused';count.textContent='—';return}title.textContent=`Pending: ${state.recommendations[0]?.name??'none'}`;count.textContent=seconds+'s';timer=setInterval(()=>{seconds--;count.textContent=seconds+'s';if(seconds<=0){clearInterval(timer);if(state.recommendations[0])pick(state.recommendations[0].id,'auto')}},1000)}
+    function restartClock(){clearInterval(timer);seconds=state.settings.override_seconds;const title=document.querySelector('#clockTitle'),count=document.querySelector('#countdown');if(state.is_complete){title.textContent='Mock draft complete';count.textContent='✓';return}if(paused){title.textContent='Auto-pick paused';count.textContent='—';return}title.textContent=`Pending: ${state.recommendations[0]?.name??'none'}`;count.textContent=seconds+'s';timer=setInterval(()=>{seconds--;count.textContent=seconds+'s';if(seconds<=0){clearInterval(timer);if(state.recommendations[0])pick(state.recommendations[0].id,'auto')}},1000)}
     async function pick(id,source){try{render(await api('/api/pick',{player_id:id,source}))}catch(e){alert(e.message);await load()}} window.pick=pick;
     async function load(){render(await api('/api/state'))}
     document.querySelector('#pause').onclick=()=>{paused=!paused;document.querySelector('#pause').textContent=paused?'Resume auto-pick':'Pause auto-pick';document.querySelector('#mode').textContent=paused?'PAUSED':'AUTO';restartClock()};
     document.querySelector('#reset').onclick=async()=>render(await api('/api/reset',{}));
     document.querySelector('#saveWeights').onclick=async()=>{const body={};document.querySelectorAll('[data-weight]').forEach(el=>body[el.dataset.weight]=Number(el.value));render(await api('/api/weights',body))};
+    document.querySelector('#saveSettings').onclick=async()=>{try{render(await api('/api/settings',{user_slot:Number(document.querySelector('#draftSlot').value),override_seconds:Number(document.querySelector('#overrideSeconds').value)}))}catch(e){alert(e.message)}};
     load().catch(e=>document.querySelector('#pickStatus').textContent=e.message);
   </script>
 </body>

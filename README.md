@@ -29,9 +29,10 @@ $env:PYTHONPATH = "src"
 python -m draft_agent
 ```
 
-Open <http://127.0.0.1:8765>. The dashboard starts at pick 1 from draft slot 6.
-Opponent selections are simulated from ADP. Your recommended player is picked
-after a 20-second countdown unless you pause or choose an alternative.
+Open <http://127.0.0.1:8765>. The dashboard defaults to draft slot 6, which can
+be changed in Draft Settings. Opponent selections are simulated from ADP. Your
+recommended player is picked after a configurable countdown (20 seconds by
+default) unless you pause or choose an alternative.
 
 ## Test
 
