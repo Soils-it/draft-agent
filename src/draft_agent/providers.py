@@ -18,6 +18,9 @@ NFLVERSE_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/"
     "stats_player/stats_player_reg_{season}.csv"
 )
+NFLVERSE_PLAYERS_URL = (
+    "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class ProviderResult:
     season: int
     fetched_at: str
     cached: bool
+    mapped_espn_ids: int
 
 
 def _number(row: dict[str, str], key: str) -> float:
@@ -36,13 +40,26 @@ def _number(row: dict[str, str], key: str) -> float:
         return 0.0
 
 
-def players_from_nflverse_csv(content: str, season: int) -> list[Player]:
+def espn_ids_from_players_csv(content: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for row in csv.DictReader(io.StringIO(content)):
+        gsis_id = row.get("gsis_id") or ""
+        espn_id = row.get("espn_id") or ""
+        if gsis_id and espn_id:
+            result[gsis_id] = espn_id
+    return result
+
+
+def players_from_nflverse_csv(
+    content: str, season: int, espn_ids: dict[str, str] | None = None
+) -> list[Player]:
     """Create a conservative baseline from prior regular-season totals.
 
     This is intentionally not labeled as a current-season expert projection.
     Per-game production is extended to 17 games, capped, and regressed by 8%.
     """
     rows = list(csv.DictReader(io.StringIO(content)))
+    espn_ids = espn_ids or {}
     candidates: list[Player] = []
     for row in rows:
         position = (row.get("position") or "").upper()
@@ -91,6 +108,7 @@ def players_from_nflverse_csv(content: str, season: int) -> list[Player]:
                 upside=0.5,
                 risk=min(0.8, 0.12 + max(0, 17 - games) / 17 * 0.6),
                 status=f"{season} BASELINE",
+                external_ids={"espn": espn_ids[player_id]} if player_id in espn_ids else {},
             )
         )
 
@@ -123,14 +141,13 @@ class NflverseProvider:
     def __init__(self, cache_dir: Path | None = None):
         self.cache_dir = cache_dir or Path(".cache/nflverse")
 
-    def load(self, season: int, refresh: bool = False) -> ProviderResult:
-        cache_file = self.cache_dir / f"stats_player_reg_{season}.csv"
+    def _load_url(self, url: str, cache_file: Path, refresh: bool) -> tuple[str, bool]:
         cached = cache_file.exists() and not refresh
         if cached:
             content = cache_file.read_text(encoding="utf-8")
         else:
             request = urllib.request.Request(
-                NFLVERSE_URL.format(season=season),
+                url,
                 headers={"User-Agent": "espn-fantasy-draft-agent/0.1"},
             )
             try:
@@ -145,10 +162,26 @@ class NflverseProvider:
             content = payload.decode("utf-8-sig")
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(content, encoding="utf-8")
+        return content, cached
+
+    def load(self, season: int, refresh: bool = False) -> ProviderResult:
+        stats_content, stats_cached = self._load_url(
+            NFLVERSE_URL.format(season=season),
+            self.cache_dir / f"stats_player_reg_{season}.csv",
+            refresh,
+        )
+        players_content, players_cached = self._load_url(
+            NFLVERSE_PLAYERS_URL,
+            self.cache_dir / "players.csv",
+            refresh,
+        )
+        espn_ids = espn_ids_from_players_csv(players_content)
+        players = players_from_nflverse_csv(stats_content, season, espn_ids)
         return ProviderResult(
-            players=players_from_nflverse_csv(content, season),
+            players=players,
             source="nflverse historical baseline",
             season=season,
             fetched_at=datetime.now(timezone.utc).isoformat(),
-            cached=cached,
+            cached=stats_cached and players_cached,
+            mapped_espn_ids=sum(bool(player.external_ids.get("espn")) for player in players),
         )

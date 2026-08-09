@@ -9,6 +9,7 @@ from importlib.resources import files
 from typing import Any
 
 from .data import demo_players
+from .espn import EspnDraftBridge
 from .providers import NflverseProvider
 from .session import DraftSession
 
@@ -20,6 +21,7 @@ DATA_SOURCE: dict[str, object] = {
     "season": None,
     "cached": False,
 }
+ESPN_BRIDGE = EspnDraftBridge()
 
 
 def _state_payload() -> dict[str, object]:
@@ -29,6 +31,7 @@ def _state_payload() -> dict[str, object]:
         "override_seconds": OVERRIDE_SECONDS,
     }
     payload["data_source"] = DATA_SOURCE
+    payload["espn"] = ESPN_BRIDGE.state
     return payload
 
 
@@ -108,7 +111,15 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     "cached": result.cached,
                     "fetched_at": result.fetched_at,
                     "warning": "Historical baseline only; not a current expert projection.",
+                    "mapped_espn_ids": result.mapped_espn_ids,
                 }
+            elif self.path == "/api/espn/snapshot":
+                ESPN_BRIDGE.ingest(
+                    body,
+                    list(SESSION.players.values()),
+                    SESSION.engine,
+                    SESSION.config,
+                )
             elif self.path == "/api/reset":
                 SESSION = DraftSession(demo_players(), SESSION.config)
             else:

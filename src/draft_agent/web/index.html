@@ -37,7 +37,8 @@
       <div class="panel" style="margin-top:18px"><h2>Recent picks</h2><div id="recent"></div></div>
     </section>
     <aside>
-      <div class="panel"><h2>Your roster</h2><div id="roster" class="roster"></div></div>
+      <div class="panel"><h2>ESPN bridge</h2><div id="espnStatus" class="empty"></div></div>
+      <div class="panel" style="margin-top:18px"><h2>Your roster</h2><div id="roster" class="roster"></div></div>
       <div class="panel" style="margin-top:18px"><h2>Player data</h2><label>Baseline season <input id="dataSeason" type="number" min="1999" max="2100" value="2025"></label><br><br><button id="loadNflverse">Load free nflverse data</button><div class="explain">Uses prior results as a baseline. It is not a current-season projection or ADP feed.</div></div>
       <div class="panel" style="margin-top:18px"><h2>Draft settings</h2><label>Draft slot <input id="draftSlot" type="number" min="1" max="12"></label><br><br><label>Override seconds <input id="overrideSeconds" type="number" min="5" max="120"></label><br><br><button id="saveSettings">Apply settings</button><div class="explain">Changing the draft slot resets the mock draft.</div></div>
       <div class="panel weights" style="margin-top:18px"><h2>Strategy weights</h2><div id="weights"></div><button id="saveWeights">Apply strategy</button></div>
@@ -51,6 +52,7 @@
       const rec=document.querySelector('#recommendations');rec.innerHTML=s.recommendations.length?`<table><thead><tr><th>Player</th><th>Proj</th><th>ADP</th><th>Score</th><th></th></tr></thead><tbody>${s.recommendations.map((p,i)=>`<tr><td><strong>${i+1}. ${p.name}</strong> <span class="pill">${p.position}</span><div class="explain">${labels[Object.entries(p.components).filter(([k])=>k!=='risk').sort((a,b)=>b[1]-a[1])[0][0]]} leads · ${(p.components.gone_next_pick*100).toFixed(0)}% chance gone</div></td><td>${p.projected_points}</td><td>${p.adp}</td><td>${p.draft_score}</td><td><button onclick="pick('${p.id}','override')">Pick</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No recommendation available.</div>';
       document.querySelector('#roster').innerHTML=s.roster.length?s.roster.map(p=>`<div><strong>${p.position}</strong> · ${p.name}<div class="explain">${p.projected_points} projected</div></div>`).join(''):'<div class="empty">No players yet</div>';
       document.querySelector('#recent').innerHTML=s.recent_picks.map(p=>`<span class="pill">${p.overall}: ${p.player} (${p.position})</span> `).join('');
+      document.querySelector('#espnStatus').innerHTML=s.espn.connected?`<span class="status">Connected in shadow mode</span><br>Pick ${s.espn.overall_pick} · ${(s.espn.match_rate*100).toFixed(0)}% ID match<br><span class="explain">${s.espn.message}</span>`:`${s.espn.message}<br><span class="explain">Real pick submission is disabled.</span>`;
       const weights=document.querySelector('#weights');if(!weights.children.length)weights.innerHTML=Object.entries(s.weights).map(([k,v])=>`<label>${labels[k]}<input data-weight="${k}" type="range" min="0" max="1" step=".01" value="${v}"><output>${v.toFixed(2)}</output></label>`).join('');
       const slot=document.querySelector('#draftSlot'),override=document.querySelector('#overrideSeconds');if(document.activeElement!==slot)slot.value=s.settings.user_slot;if(document.activeElement!==override)override.value=s.settings.override_seconds;
       document.querySelectorAll('[data-weight]').forEach(el=>el.oninput=()=>el.nextElementSibling.value=Number(el.value).toFixed(2));restartClock(); }

@@ -15,6 +15,7 @@ class Player:
     upside: float = 0.5
     risk: float = 0.2
     status: str = "ACTIVE"
+    external_ids: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -26,6 +27,7 @@ class Player:
             "upside": round(self.upside, 3),
             "risk": round(self.risk, 3),
             "status": self.status,
+            "espn_id": self.external_ids.get("espn"),
         }
 
 

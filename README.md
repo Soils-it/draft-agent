@@ -42,6 +42,27 @@ The files are free and CC BY 4.0 licensed. Downloaded CSVs are cached under
 production with conservative regression; it is clearly not a substitute for
 current projections, injuries, depth charts, or true market ADP.
 
+## ESPN bridge status
+
+The server exposes `POST /api/espn/snapshot` for a future browser companion.
+It accepts browser-observed league/draft identifiers, overall pick, on-clock
+state, available ESPN player IDs, and roster ESPN player IDs. The bridge joins
+those IDs through nflverse, rejects duplicates and low match rates, and returns
+shadow recommendations. It intentionally exposes no submit-pick operation yet.
+
+Example payload using placeholder IDs:
+
+```json
+{
+  "league_id": "EXAMPLE_LEAGUE",
+  "draft_id": "EXAMPLE_DRAFT",
+  "overall_pick": 6,
+  "on_clock": true,
+  "available_player_ids": ["1001", "1002"],
+  "roster_player_ids": []
+}
+```
+
 ## Test
 
 ```powershell

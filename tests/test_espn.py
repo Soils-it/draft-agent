@@ -1,0 +1,57 @@
+import unittest
+from dataclasses import replace
+
+from draft_agent.config import LeagueConfig
+from draft_agent.data import demo_players
+from draft_agent.engine import DraftEngine
+from draft_agent.espn import EspnDraftBridge
+
+
+class EspnBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.config = LeagueConfig(user_slot=6)
+        self.engine = DraftEngine(self.config)
+        self.players = [
+            replace(player, external_ids={"espn": str(index)})
+            for index, player in enumerate(demo_players(), 1000)
+        ]
+        self.bridge = EspnDraftBridge()
+
+    def payload(self):
+        return {
+            "league_id": "example-league",
+            "draft_id": "example-draft",
+            "overall_pick": 6,
+            "on_clock": True,
+            "available_player_ids": [player.external_ids["espn"] for player in self.players[:200]],
+            "roster_player_ids": [],
+        }
+
+    def test_shadow_snapshot_returns_mapped_recommendation(self):
+        state = self.bridge.ingest(self.payload(), self.players, self.engine, self.config)
+        self.assertTrue(state["connected"])
+        self.assertFalse(state["can_submit"])
+        self.assertEqual(state["match_rate"], 1)
+        self.assertEqual(len(state["recommendations"]), 5)
+        self.assertIsNotNone(state["pending_espn_player_id"])
+
+    def test_rejects_duplicate_and_low_match_snapshots(self):
+        duplicate = self.payload()
+        duplicate["available_player_ids"] = ["1000", "1000"]
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.bridge.ingest(duplicate, self.players, self.engine, self.config)
+        missing = self.payload()
+        missing["available_player_ids"] = ["unknown-1", "unknown-2"]
+        with self.assertRaisesRegex(ValueError, "50%"):
+            self.bridge.ingest(missing, self.players, self.engine, self.config)
+
+    def test_off_clock_snapshot_does_not_prepare_pick(self):
+        payload = self.payload()
+        payload["on_clock"] = False
+        state = self.bridge.ingest(payload, self.players, self.engine, self.config)
+        self.assertEqual(state["recommendations"], [])
+        self.assertIsNone(state["pending_espn_player_id"])
+
+
+if __name__ == "__main__":
+    unittest.main()
