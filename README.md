@@ -51,9 +51,9 @@ those IDs through nflverse, rejects duplicates and low match rates, and returns
 shadow recommendations. It intentionally exposes no submit-pick operation yet.
 
 `browser-companion/` contains an optional unpacked extension for sending those
-snapshots. Its ESPN DOM selectors are deliberately blank until they can be
-observed in a real mock draft. The companion is shadow-only and contains no
-code that clicks or submits a player.
+snapshots. Its read-only observer was verified against ESPN's 2026 mock-draft
+React store. The companion is shadow-only and contains no code that clicks or
+submits a player.
 
 Example payload using placeholder IDs:
 

@@ -16,12 +16,8 @@
 <body>
   <h1>ESPN Shadow Companion</h1>
   <p class="warning">Observation only. This extension cannot submit picks.</p>
-  <label><input id="enabled" type="checkbox"> Enable snapshot syncing</label>
-  <label>Overall-pick selector<input id="overallPickSelector" type="text" placeholder="Configure after mock-draft inspection"></label>
-  <label>On-clock selector<input id="onClockSelector" type="text"></label>
-  <label>Available-player selector<input id="availablePlayerSelector" type="text"></label>
-  <label>Roster-player selector<input id="rosterPlayerSelector" type="text"></label>
-  <label>Player-ID attribute<input id="playerIdAttribute" type="text" value="data-player-id"></label>
+  <label><input id="enabled" type="checkbox"> Enable shadow snapshot syncing</label>
+  <p>Reads ESPN's in-page draft state every two seconds. It sends only draft identifiers, pick state, and ESPN player IDs to the local agent.</p>
   <button id="save">Save and sync</button>
   <div id="status">Not configured</div>
   <script src="popup.js"></script>

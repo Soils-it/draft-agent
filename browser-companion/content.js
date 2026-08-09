@@ -2,75 +2,19 @@
   "use strict";
 
   const LOCAL_ENDPOINT = "http://127.0.0.1:8765/api/espn/snapshot";
-  const REQUIRED_SELECTORS = [
-    "overallPickSelector",
-    "onClockSelector",
-    "availablePlayerSelector",
-    "rosterPlayerSelector"
-  ];
-
-  function queryAll(selector) {
-    try {
-      return Array.from(document.querySelectorAll(selector));
-    } catch (_error) {
-      throw new Error(`Invalid selector: ${selector}`);
-    }
-  }
-
-  function playerIds(selector, attribute) {
-    return [...new Set(queryAll(selector).map((element) => element.getAttribute(attribute)).filter(Boolean))];
-  }
-
-  function numberFromElement(selector) {
-    const element = queryAll(selector)[0];
-    if (!element) throw new Error(`No element matched ${selector}`);
-    const match = element.textContent.match(/\d+/);
-    if (!match) throw new Error(`No pick number found in ${selector}`);
-    return Number(match[0]);
-  }
-
-  function onClockFromElement(selector) {
-    const element = queryAll(selector)[0];
-    if (!element) return false;
-    const value = `${element.getAttribute("data-on-clock") || ""} ${element.textContent}`.toLowerCase();
-    return /(^|\s)(true|your pick|on the clock)(\s|$)/.test(value);
-  }
-
-  function urlIdentifier(name) {
-    return new URL(location.href).searchParams.get(name) || "";
-  }
+  const SNAPSHOT_EVENT = "ESPN_DRAFT_AGENT_SNAPSHOT";
+  const REQUEST_EVENT = "ESPN_DRAFT_AGENT_REQUEST";
 
   async function saveStatus(status) {
-    await chrome.storage.local.set({ draftAgentLastStatus: { ...status, at: new Date().toISOString() } });
+    await chrome.storage.local.set({
+      draftAgentLastStatus: { ...status, at: new Date().toISOString() }
+    });
   }
 
-  async function sync() {
-    const settings = await chrome.storage.local.get({
-      enabled: false,
-      playerIdAttribute: "data-player-id",
-      overallPickSelector: "",
-      onClockSelector: "",
-      availablePlayerSelector: "",
-      rosterPlayerSelector: ""
-    });
+  async function sync(snapshot) {
+    const settings = await chrome.storage.local.get({ enabled: false });
     if (!settings.enabled) return;
-    const missing = REQUIRED_SELECTORS.filter((key) => !settings[key]);
-    if (missing.length) {
-      await saveStatus({ ok: false, message: `Configure selectors: ${missing.join(", ")}` });
-      return;
-    }
     try {
-      const snapshot = {
-        league_id: urlIdentifier("leagueId"),
-        draft_id: urlIdentifier("draftId") || urlIdentifier("draftLobbyId"),
-        overall_pick: numberFromElement(settings.overallPickSelector),
-        on_clock: onClockFromElement(settings.onClockSelector),
-        available_player_ids: playerIds(settings.availablePlayerSelector, settings.playerIdAttribute),
-        roster_player_ids: playerIds(settings.rosterPlayerSelector, settings.playerIdAttribute)
-      };
-      if (!snapshot.league_id || !snapshot.draft_id) {
-        throw new Error("ESPN leagueId or draftId is missing from the page URL");
-      }
       const response = await fetch(LOCAL_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -89,12 +33,18 @@
     }
   }
 
-  chrome.runtime.onMessage.addListener((message, _sender, respond) => {
-    if (message?.type !== "DRAFT_AGENT_SYNC") return false;
-    sync().then(() => respond({ ok: true }), (error) => respond({ ok: false, error: String(error) }));
-    return true;
+  window.addEventListener(SNAPSHOT_EVENT, (event) => {
+    const snapshot = event.detail;
+    if (!snapshot || !Array.isArray(snapshot.available_player_ids)) return;
+    sync(snapshot);
   });
 
-  setInterval(sync, 3000);
-  sync();
+  chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+    if (message?.type !== "DRAFT_AGENT_SYNC") return false;
+    window.dispatchEvent(new CustomEvent(REQUEST_EVENT));
+    respond({ ok: true });
+    return false;
+  });
+
+  window.dispatchEvent(new CustomEvent(REQUEST_EVENT));
 })();

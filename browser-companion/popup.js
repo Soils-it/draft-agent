@@ -1,17 +1,8 @@
 "use strict";
 
-const fields = [
-  "overallPickSelector",
-  "onClockSelector",
-  "availablePlayerSelector",
-  "rosterPlayerSelector",
-  "playerIdAttribute"
-];
-
 async function render() {
-  const settings = await chrome.storage.local.get({ enabled: false, playerIdAttribute: "data-player-id" });
+  const settings = await chrome.storage.local.get({ enabled: false });
   document.querySelector("#enabled").checked = settings.enabled;
-  for (const field of fields) document.querySelector(`#${field}`).value = settings[field] || "";
   const status = settings.draftAgentLastStatus;
   document.querySelector("#status").textContent = status
     ? `${status.ok ? "Connected" : "Not connected"}: ${status.message}\n${status.at}`
@@ -19,9 +10,9 @@ async function render() {
 }
 
 document.querySelector("#save").addEventListener("click", async () => {
-  const settings = { enabled: document.querySelector("#enabled").checked };
-  for (const field of fields) settings[field] = document.querySelector(`#${field}`).value.trim();
-  await chrome.storage.local.set(settings);
+  await chrome.storage.local.set({
+    enabled: document.querySelector("#enabled").checked
+  });
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) {
     try {
