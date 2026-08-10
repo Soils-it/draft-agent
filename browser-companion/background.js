@@ -1,6 +1,7 @@
 "use strict";
 
 const LOCAL_ENDPOINT = "http://127.0.0.1:8765/api/espn/snapshot";
+const ESPN_DRAFT_URL = "https://fantasy.espn.com/football/draft*";
 const activePicks = new Map();
 const snapshotQueues = new Map();
 
@@ -8,6 +9,32 @@ async function saveStatus(status) {
   await chrome.storage.local.set({
     draftAgentLastStatus: { ...status, at: new Date().toISOString() }
   });
+}
+
+async function injectCompanion(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["page-observer.js"],
+      world: "MAIN"
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+      world: "ISOLATED"
+    });
+    await chrome.tabs.sendMessage(tabId, { type: "DRAFT_AGENT_SYNC" });
+  } catch (error) {
+    await saveStatus({
+      ok: false,
+      message: `Automatic draft connection failed: ${String(error?.message || error)}`
+    });
+  }
+}
+
+async function injectOpenDrafts() {
+  const tabs = await chrome.tabs.query({ url: [ESPN_DRAFT_URL] });
+  await Promise.all(tabs.filter((tab) => tab.id).map((tab) => injectCompanion(tab.id)));
 }
 
 async function handleSnapshot(snapshot, tabId) {
@@ -102,3 +129,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   activePicks.delete(tabId);
   snapshotQueues.delete(tabId);
 });
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.url?.startsWith("https://fantasy.espn.com/football/draft")) {
+    void injectCompanion(tabId);
+  }
+});
+chrome.runtime.onInstalled.addListener(() => void injectOpenDrafts());
+chrome.runtime.onStartup.addListener(() => void injectOpenDrafts());

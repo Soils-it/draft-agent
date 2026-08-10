@@ -6,7 +6,11 @@ const vm = require("vm");
 let runtimeListener = null;
 let now = 0;
 const commands = [];
+const syncMessages = [];
 const statuses = [];
+const injections = [];
+let installedListener = null;
+let updatedListener = null;
 class FakeDate extends Date {
   static now() { return now; }
 }
@@ -28,11 +32,21 @@ const context = {
       }
     },
     tabs: {
-      sendMessage: async (_tabId, message) => { commands.push(message); },
-      onRemoved: { addListener() {} }
+      query: async () => [{ id: 9 }],
+      sendMessage: async (_tabId, message) => {
+        if (message.type === "DRAFT_AGENT_SYNC") syncMessages.push(message);
+        else commands.push(message);
+      },
+      onRemoved: { addListener() {} },
+      onUpdated: { addListener(listener) { updatedListener = listener; } }
+    },
+    scripting: {
+      executeScript: async (details) => { injections.push(details); }
     },
     runtime: {
-      onMessage: { addListener: (listener) => { runtimeListener = listener; } }
+      onMessage: { addListener: (listener) => { runtimeListener = listener; } },
+      onInstalled: { addListener: (listener) => { installedListener = listener; } },
+      onStartup: { addListener() {} }
     }
   }
 };
@@ -56,6 +70,12 @@ function sendSnapshot() {
 }
 
 (async () => {
+  if (!installedListener || !updatedListener) throw new Error("Automatic connection listeners were not registered");
+  installedListener();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (injections.length !== 2 || syncMessages.length !== 1) {
+    throw new Error("Open ESPN drafts were not automatically connected after extension reload");
+  }
   await sendSnapshot();
   now = 4000;
   await sendSnapshot();

@@ -25,15 +25,16 @@ currently on the clock.
 1. Start the local server.
 2. Open the browser's extensions page and enable Developer Mode.
 3. Choose **Load unpacked** and select this directory.
-4. Open an ESPN mock draft.
-5. Enable syncing. Confirm the dashboard says **Connected in shadow mode**.
+4. Enable syncing once, then open an ESPN mock draft. The extension reconnects
+   automatically when a draft page loads or the unpacked extension is reloaded.
+5. Confirm the dashboard says **Connected in shadow mode** before the draft begins.
 6. To test automatic drafting, separately enable **automatic picks in mock
    drafts**. Leave it off for observation-only use.
 
-**Save and sync** injects one current page observer and one content bridge into
-the active ESPN tab. The manifest does not auto-inject scripts, avoiding stale
-or duplicated extension contexts after an unpacked-extension reload. Click the
-button once after entering each new draft room.
+**Save and sync** remains a manual reconnect button. Normally the background
+service worker injects one current page observer and one content bridge whenever
+an ESPN draft page finishes loading, including an already-open draft when the
+unpacked extension is reloaded.
 
 Repeated syncs use generation ownership: the newest injected bridge supersedes
 older page listeners. The content bridge only relays messages. Settings,
