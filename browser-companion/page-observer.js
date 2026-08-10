@@ -31,13 +31,13 @@
       preferred,
       ...Array.from(document.querySelectorAll("[class*='player'], [data-testid], button, a"))
     ];
-    const stores = cachedStore?.draft && cachedStore?.playerPool ? [cachedStore] : [];
+    const stores = [];
     for (const element of new Set(candidates.filter(Boolean))) {
       stores.push(...storesFromElement(element));
     }
     cachedStore = stores.sort(
       (left, right) => Number(right.draft?.pickIndex ?? -1) - Number(left.draft?.pickIndex ?? -1)
-    )[0] || null;
+    )[0] || cachedStore;
     return cachedStore;
   }
 

@@ -75,6 +75,14 @@ intervals.at(-1)();
 if (snapshots.at(-1)?.overall_pick !== 10) {
   throw new Error("The observer reused a stale React store after ESPN advanced the draft");
 }
+const restartedDraft = { ...draft, leagueId: "NEW-MOCK", pickIndex: 0 };
+currentLink = {
+  __reactFiberForTest: { memoizedProps: { store: { draft: restartedDraft, playerPool: [player] } } }
+};
+intervals.at(-1)();
+if (snapshots.at(-1)?.league_id !== "NEW-MOCK" || snapshots.at(-1)?.overall_pick !== 1) {
+  throw new Error("The observer reused a completed draft store in a newly started mock");
+}
 currentLink = { __reactFiberForTest: { memoizedProps: { store } } };
 vm.runInNewContext(
   fs.readFileSync("browser-companion/page-observer.js", "utf8"),
