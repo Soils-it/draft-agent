@@ -38,7 +38,8 @@ class EngineTests(unittest.TestCase):
     def test_weights_change_score_transparently(self):
         engine = DraftEngine(self.config)
         first = engine.rank(self.players, [], 6, 19, 1)[0]
-        engine.weights.update({"projection": 0, "vor": 0, "scarcity": 0, "roster_need": 0, "gone_next_pick": 0, "upside": 1, "risk": 0})
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"upside": 1})
         second = engine.rank(self.players, [], 6, 19, 1)[0]
         self.assertNotEqual(first["draft_score"], second["draft_score"])
         self.assertEqual(second["components"]["upside"], 0.87)
@@ -52,6 +53,123 @@ class EngineTests(unittest.TestCase):
         engine.weights.update({key: 0 for key in engine.weights.__dict__})
         engine.weights.update({"consensus": 1})
         self.assertEqual(engine.rank(players, [], 6, 19, 1)[0]["id"], "early")
+
+    def test_top_market_rb_beats_high_projection_wr_reach_at_pick_two(self):
+        players = [
+            Player(
+                "rb-top",
+                "Top RB",
+                "AAA",
+                "RB",
+                2,
+                projected_points_override=280,
+                signals={"consensus_rank": 2},
+            ),
+            Player(
+                "rb-next",
+                "Next RB",
+                "BBB",
+                "RB",
+                3,
+                projected_points_override=200,
+                signals={"consensus_rank": 3},
+            ),
+            Player(
+                "wr-reach",
+                "Projected WR",
+                "CCC",
+                "WR",
+                8,
+                projected_points_override=360,
+                signals={"consensus_rank": 8},
+            ),
+            Player(
+                "wr-next",
+                "Next WR",
+                "DDD",
+                "WR",
+                7,
+                projected_points_override=180,
+                signals={"consensus_rank": 7},
+            ),
+        ]
+        ranked = DraftEngine(self.config, simulation_samples=50).rank(
+            players, [], 2, 23
+        )
+        self.assertEqual(ranked[0]["id"], "rb-top")
+        wr = next(item for item in ranked if item["id"] == "wr-reach")
+        self.assertEqual(wr["components"]["reach_penalty"], 1.0)
+
+    def test_first_round_wr_value_can_still_beat_rb(self):
+        players = [
+            Player(
+                "wr-value",
+                "Value WR",
+                "AAA",
+                "WR",
+                1,
+                projected_points_override=300,
+                signals={"consensus_rank": 1},
+            ),
+            Player(
+                "wr-next",
+                "Next WR",
+                "BBB",
+                "WR",
+                7,
+                projected_points_override=220,
+                signals={"consensus_rank": 7},
+            ),
+            Player(
+                "rb-top",
+                "Top RB",
+                "CCC",
+                "RB",
+                2,
+                projected_points_override=280,
+                signals={"consensus_rank": 2},
+            ),
+            Player(
+                "rb-next",
+                "Next RB",
+                "DDD",
+                "RB",
+                3,
+                projected_points_override=200,
+                signals={"consensus_rank": 3},
+            ),
+        ]
+        ranked = DraftEngine(self.config, simulation_samples=50).rank(
+            players, [], 2, 23
+        )
+        self.assertEqual(ranked[0]["id"], "wr-value")
+
+    def test_unavailable_projection_outlier_is_not_an_early_pick(self):
+        players = [
+            Player(
+                "pup-wr",
+                "PUP WR",
+                "AAA",
+                "WR",
+                2,
+                projected_points_override=400,
+                signals={"consensus_rank": 2},
+                context={"nfl_status": "PUP"},
+            ),
+            Player(
+                "healthy-rb",
+                "Healthy RB",
+                "BBB",
+                "RB",
+                3,
+                projected_points_override=250,
+                signals={"consensus_rank": 3},
+            ),
+        ]
+        ranked = DraftEngine(self.config, simulation_samples=50).rank(
+            players, [], 2, 23
+        )
+        self.assertEqual([item["id"] for item in ranked], ["healthy-rb"])
 
     def test_injury_and_bye_overlap_reduce_components(self):
         healthy = Player("healthy", "Healthy", "AAA", "WR", 10, projected_points_override=200, signals={"bye_week": 8})

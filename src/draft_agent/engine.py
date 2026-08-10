@@ -12,22 +12,23 @@ from .simulation import simulate_turn_value
 
 @dataclass
 class StrategyWeights:
-    projection: float = 0.20
-    consensus: float = 0.16
-    vor: float = 0.18
-    scarcity: float = 0.10
-    tier_drop: float = 0.08
-    te_urgency: float = 0.10
-    roster_need: float = 0.12
-    position_value: float = 0.12
-    gone_next_pick: float = 0.08
-    availability: float = 0.06
-    bye_fit: float = 0.02
+    projection: float = 0.12
+    consensus: float = 0.24
+    reach_penalty: float = 0.22
+    vor: float = 0.12
+    scarcity: float = 0.06
+    tier_drop: float = 0.05
+    te_urgency: float = 0.08
+    roster_need: float = 0.16
+    position_value: float = 0.16
+    gone_next_pick: float = 0.06
+    availability: float = 0.10
+    bye_fit: float = 0.01
     trend: float = 0.02
-    rookie_camp_role: float = 0.04
-    upside: float = 0.05
-    risk: float = 0.07
-    simulation: float = 0.12
+    rookie_camp_role: float = 0.03
+    upside: float = 0.04
+    risk: float = 0.12
+    simulation: float = 0.05
 
     def update(self, values: dict[str, float]) -> None:
         for key in asdict(self):
@@ -41,7 +42,7 @@ class StrategyWeights:
 class DraftEngine:
     # A 12-team, 1-QB league replaces quarterbacks near QB12, while the FLEX
     # and deeper RB/WR benches push replacement much farther down those pools.
-    replacement_rank = {"QB": 12, "RB": 36, "WR": 42, "TE": 12, "K": 12, "DST": 12}
+    replacement_rank = {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12}
 
     def __init__(
         self,
@@ -68,11 +69,31 @@ class DraftEngine:
 
     @staticmethod
     def _market_reach_limit(round_number: int) -> int:
+        if round_number <= 4:
+            return 6
         if round_number <= 8:
             return 12
         if round_number <= 12:
             return 20
         return 35
+
+    @staticmethod
+    def _pick_relative_consensus(
+        player: Player,
+        current_pick: int,
+        reach_limit: int,
+    ) -> float:
+        """Score market value around this pick instead of the entire pool."""
+        market_rank = DraftEngine._market_rank(player)
+        return min(
+            1.0,
+            max(0.0, 0.5 + (current_pick - market_rank) / (2 * reach_limit)),
+        )
+
+    @staticmethod
+    def _reach_penalty(player: Player, current_pick: int, reach_limit: int) -> float:
+        reach = max(0.0, DraftEngine._market_rank(player) - current_pick)
+        return min(1.0, reach / reach_limit)
 
     def _roster_need(
         self,
@@ -272,6 +293,12 @@ class DraftEngine:
         ]
         if market_eligible:
             eligible = market_eligible
+        # Do not let an IR/PUP projection anomaly become an early-round auto
+        # pick. Late IR stashes remain possible after the starting core is built.
+        if round_number <= 12:
+            active_eligible = [player for player in eligible if self._availability(player) > 0]
+            if active_eligible:
+                eligible = active_eligible
         points = {p.player_id: projected_points(p) for p in eligible}
         by_position: dict[str, list[Player]] = defaultdict(list)
         for player in eligible:
@@ -298,8 +325,10 @@ class DraftEngine:
             next_index = min(player_index + 1, len(group) - 1)
             tier_raw[player.player_id] = points[player.player_id] - points[group[next_index].player_id]
 
-        consensus_raw = {
-            player.player_id: -player.signals.get("consensus_rank", player.adp)
+        consensus_score = {
+            player.player_id: self._pick_relative_consensus(
+                player, current_pick, reach_limit
+            )
             for player in eligible
         }
         trend_raw = {
@@ -314,7 +343,7 @@ class DraftEngine:
             # Raw QB totals cannot be compared to RB/WR totals in a 1-QB league.
             # This measures projection quality within each player's position.
             "projection": projection_relative,
-            "consensus": self._normalize(consensus_raw),
+            "consensus": consensus_score,
             "vor": self._normalize(vor_raw),
             "scarcity": self._normalize(scarcity_raw),
             "tier_drop": self._normalize(tier_raw),
@@ -325,6 +354,7 @@ class DraftEngine:
         for player in eligible:
             # Logistic approximation: earlier ADP and a longer wait increase the chance gone.
             market_rank = self._market_rank(player)
+            reach_penalty = self._reach_penalty(player, current_pick, reach_limit)
             blended_rank = market_rank * 0.7 + player.adp * 0.3
             uncertainty = min(player.signals.get("consensus_sd", 8.0) / 30, 1.0)
             gone = 1 / (1 + math.exp((blended_rank - (current_pick + picks_away * 0.55)) / (6.5 + 4 * uncertainty)))
@@ -343,6 +373,7 @@ class DraftEngine:
             score = (
                 self.weights.projection * components["projection"][player.player_id]
                 + self.weights.consensus * components["consensus"][player.player_id]
+                - self.weights.reach_penalty * reach_penalty
                 + self.weights.vor * components["vor"][player.player_id]
                 + self.weights.scarcity * components["scarcity"][player.player_id]
                 + self.weights.tier_drop * components["tier_drop"][player.player_id]
@@ -360,6 +391,7 @@ class DraftEngine:
             detail = {
                 "projection": components["projection"][player.player_id],
                 "consensus": components["consensus"][player.player_id],
+                "reach_penalty": reach_penalty,
                 "vor": components["vor"][player.player_id],
                 "scarcity": components["scarcity"][player.player_id],
                 "tier_drop": components["tier_drop"][player.player_id],

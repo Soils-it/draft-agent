@@ -100,7 +100,7 @@ python -m unittest discover -s tests -v
 Each available player receives normalized component scores for:
 
 - projected fantasy points
-- current full-PPR expert consensus and analyst uncertainty
+- pick-relative full-PPR expert consensus, analyst uncertainty, and reach cost
 - value over replacement (VOR)
 - positional scarcity and nearby tier drop
 - roster need
@@ -115,6 +115,15 @@ Every weight is adjustable in the dashboard, and every recommendation exposes
 its component scores. The model is deterministic for the same draft state and
 settings.
 
+Consensus is anchored to the current selection rather than normalized across
+the full draft pool. This makes the difference between RB2 and WR10 meaningful
+at pick 2. Projection, VOR, scarcity, tier drop, and turn simulation use smaller
+weights because they are correlated views of the same underlying projection.
+The default replacement baselines value RB42 versus WR36 to reflect the faster
+loss of usable RB volume in this league. Reaches are limited to six picks in
+rounds 1-4 and receive an explicit score penalty. IR/PUP players are excluded
+through round 12 when a healthy candidate is available.
+
 The default 12-team, 1-QB roster-construction profile also prevents raw QB
 scoring from dominating cross-position comparisons. It normally delays the
 first QB until round 4, but permits a top-36 consensus QB earlier when that
@@ -126,11 +135,11 @@ round 4. TE is deferred until that foundation is complete; an exceptional
 early QB can move completion to round 5 only after RB1 and WR1 are secured.
 The profile reserves K and D/ST for rounds 15-16 and caps the planned RB bench
 at five. TE urgency increases across rounds 8-10 and reacts to projected tier
-cliffs. A market guardrail limits reaches to 12 picks through round 8, 20 picks
-through round 12, and 35 picks afterward, with a fallback when a forced lineup
-requirement has no candidate in range. RB replacement value is calculated
-deeper than QB replacement value to reflect two RB starters, FLEX demand, and
-the league's stronger RB scarcity.
+cliffs. A market guardrail limits reaches to six picks through round 4, 12
+picks through round 8, 20 picks through round 12, and 35 picks afterward, with
+a fallback when a forced lineup requirement has no candidate in range. RB
+replacement value is calculated deeper than QB replacement value to reflect
+two RB starters, FLEX demand, and the league's stronger RB scarcity.
 
 Rookie camp information is intentionally a supporting signal, not a primary
 ranking. The free Sleeper feed supplies rookie experience, current depth-chart
