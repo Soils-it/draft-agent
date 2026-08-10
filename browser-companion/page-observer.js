@@ -149,8 +149,11 @@
     emitResult({
       ok: true,
       message: `Mock pick sent: ${selected.fullName || selected.name}`,
+      league_id: String(draft.leagueId || ""),
+      draft_id: String(draft.leagueId || ""),
       overall_pick: draft.pickIndex + 1,
-      player_id: String(selected.id)
+      player_id: String(selected.id),
+      name: String(selected.fullName || selected.name || "Unknown player")
     });
   }
 

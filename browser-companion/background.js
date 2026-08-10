@@ -1,6 +1,7 @@
 "use strict";
 
 const LOCAL_ENDPOINT = "http://127.0.0.1:8765/api/espn/snapshot";
+const PICK_RESULT_ENDPOINT = "http://127.0.0.1:8765/api/espn/pick-result";
 const ESPN_DRAFT_URL = "https://fantasy.espn.com/football/draft*";
 const activePicks = new Map();
 const snapshotQueues = new Map();
@@ -108,6 +109,17 @@ async function considerMockPick(snapshot, result, enabled, tabId) {
   });
 }
 
+async function recordPickResult(result) {
+  if (result?.ok !== true) return;
+  const response = await fetch(PICK_RESULT_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(result)
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Local decision log rejected the pick result");
+}
+
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message?.type === "DRAFT_AGENT_SNAPSHOT" && sender.tab?.id) {
     queueSnapshot(message.snapshot, sender.tab.id)
@@ -117,6 +129,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   }
   if (message?.type === "DRAFT_AGENT_PICK_RESULT") {
     const result = message.result;
+    void recordPickResult(result).catch((error) => saveStatus({
+      ok: false,
+      message: `Mock pick sent, but decision logging failed: ${String(error?.message || error)}`
+    }));
     void saveStatus({
       ok: result?.ok === true,
       message: String(result?.message || "Mock selection finished.")

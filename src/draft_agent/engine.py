@@ -25,6 +25,7 @@ class StrategyWeights:
     te_urgency: float = 0.08
     roster_need: float = 0.16
     position_value: float = 0.16
+    lineup_quality: float = 0.18
     rb_anchor: float = 0.30
     gone_next_pick: float = 0.06
     availability: float = 0.10
@@ -50,6 +51,7 @@ class DraftEngine:
     # A 12-team, 1-QB league replaces quarterbacks near QB12, while the FLEX
     # and deeper RB/WR benches push replacement much farther down those pools.
     replacement_rank = {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12}
+    elite_starter_market = {"QB": 48, "TE": 60}
 
     def __init__(
         self,
@@ -171,6 +173,69 @@ class DraftEngine:
             if peer.player_id != player.player_id
         )
 
+    def _elite_starter_blocks_backup(
+        self,
+        player: Player,
+        roster: list[Player],
+    ) -> bool:
+        position = player.position
+        if position not in self.elite_starter_market:
+            return False
+        incumbents = [item for item in roster if item.position == position]
+        if len(incumbents) < self.config.starters[position]:
+            return False
+        if self._preference(player) > 0:
+            return False
+        best_market_rank = min(self._market_rank(item) for item in incumbents)
+        return best_market_rank <= self.elite_starter_market[position]
+
+    @staticmethod
+    def _skill_lineup_points(roster: list[Player]) -> tuple[float, list[float]]:
+        by_position = {
+            position: sorted(
+                (projected_points(item) for item in roster if item.position == position),
+                reverse=True,
+            )
+            for position in ("RB", "WR")
+        }
+        starters = by_position["RB"][:2] + by_position["WR"][:2]
+        flex_pool = by_position["RB"][2:] + by_position["WR"][2:]
+        if flex_pool:
+            starters.append(max(flex_pool))
+        return sum(starters), starters
+
+    def _lineup_quality(self, player: Player, roster: list[Player]) -> float:
+        """Measure whether this pick improves starters or only adds redundancy."""
+        same_position = [item for item in roster if item.position == player.position]
+        required = self.config.starters[player.position]
+        if len(same_position) < required:
+            return 1.0
+
+        candidate_points = projected_points(player)
+        if player.position in {"RB", "WR"}:
+            before, current_lineup = self._skill_lineup_points(roster)
+            after, _ = self._skill_lineup_points([*roster, player])
+            if after > before + 1e-9:
+                return 1.0
+            if not current_lineup:
+                return 1.0
+            lineup_cut = min(current_lineup)
+            ratio = min(candidate_points / max(lineup_cut, 1.0), 1.0)
+            depth = max(0, len(same_position) - required)
+            depth_discount = max(0.45, 1.0 - depth * 0.12)
+            return max(0.15, 0.7 * ratio * depth_discount)
+
+        incumbent_points = max(projected_points(item) for item in same_position)
+        if candidate_points > incumbent_points:
+            return 1.0
+        if player.position in {"QB", "TE"}:
+            best_market_rank = min(self._market_rank(item) for item in same_position)
+            threshold = self.elite_starter_market[player.position]
+            weakness = min(1.0, max(0.0, (best_market_rank - threshold) / threshold))
+            ratio = min(candidate_points / max(incumbent_points, 1.0), 1.0)
+            return max(0.05, ratio * (0.2 + 0.45 * weakness))
+        return 0.05
+
     def _roster_need(
         self,
         player: Player,
@@ -191,6 +256,8 @@ class DraftEngine:
             # roster spot when the market has let one fall at least 20 picks.
             if counts[position] and current_pick - self._market_rank(player) < 20:
                 return -1.0
+            if counts[position] and self._elite_starter_blocks_backup(player, roster):
+                return -1.0
             if not counts[position] and round_number < 4:
                 market_rank = self._market_rank(player)
                 early_value = market_rank <= 36 and current_pick - market_rank >= 12
@@ -208,6 +275,8 @@ class DraftEngine:
             return -1.0
         if position == "TE":
             if counts[position] and round_number < 13:
+                return -1.0
+            if counts[position] and self._elite_starter_blocks_backup(player, roster):
                 return -1.0
             if counts[position] == 0 and round_number < 4:
                 return -1.0
@@ -484,6 +553,7 @@ class DraftEngine:
             gone = 1 / (1 + math.exp((blended_rank - (current_pick + picks_away * 0.55)) / (6.5 + 4 * uncertainty)))
             roster_need = self._roster_need(player, roster, round_number, current_pick)
             position_value = self._position_value(player, roster, round_number)
+            lineup_quality = self._lineup_quality(player, roster)
             rb_anchor = self._rb_anchor(player, roster, round_number, current_pick)
             preference = self._preference(player)
             te_urgency = self._te_urgency(
@@ -496,29 +566,6 @@ class DraftEngine:
             availability = self._availability(player)
             bye_fit = self._bye_fit(player, roster)
             effective_risk = min(1.0, player.risk + (1 - availability) * 0.7 + uncertainty * 0.15)
-            score = (
-                self.weights.projection * components["projection"][player.player_id]
-                + self.weights.consensus * components["consensus"][player.player_id]
-                + self.weights.market_quality * components["market_quality"][player.player_id]
-                - self.weights.market_dominance * market_dominance
-                - self.weights.reach_penalty * reach_penalty
-                + self.weights.vor * components["vor"][player.player_id]
-                + self.weights.scarcity * components["scarcity"][player.player_id]
-                + self.weights.tier_drop * components["tier_drop"][player.player_id]
-                + self.weights.te_urgency * te_urgency
-                + self.weights.roster_need * roster_need
-                + self.weights.position_value * position_value
-                + self.weights.rb_anchor * rb_anchor
-                + self.weights.gone_next_pick * gone
-                + self.weights.availability * availability
-                + self.weights.bye_fit * bye_fit
-                + self.weights.trend * components["trend"][player.player_id]
-                + self.weights.rookie_camp_role * rookie_camp_role
-                + self.weights.preference * preference
-                - self.weights.exposure_penalty * exposure
-                + self.weights.upside * player.upside
-                - self.weights.risk * effective_risk
-            )
             detail = {
                 "projection": components["projection"][player.player_id],
                 "consensus": components["consensus"][player.player_id],
@@ -531,6 +578,7 @@ class DraftEngine:
                 "te_urgency": te_urgency,
                 "roster_need": roster_need,
                 "position_value": position_value,
+                "lineup_quality": lineup_quality,
                 "rb_anchor": rb_anchor,
                 "gone_next_pick": gone,
                 "availability": availability,
@@ -542,6 +590,17 @@ class DraftEngine:
                 "upside": player.upside,
                 "risk": effective_risk,
             }
+            penalty_components = {
+                "market_dominance",
+                "reach_penalty",
+                "exposure_penalty",
+                "risk",
+            }
+            contributions = {
+                key: getattr(self.weights, key) * value * (-1 if key in penalty_components else 1)
+                for key, value in detail.items()
+            }
+            score = sum(contributions.values())
             results.append(
                 {
                     **player.as_dict(),
@@ -551,6 +610,9 @@ class DraftEngine:
                     "market_reach_limit": reach_limit,
                     "draft_score": round(score, 4),
                     "components": {key: round(value, 3) for key, value in detail.items()},
+                    "contributions": {
+                        key: round(value, 4) for key, value in contributions.items()
+                    },
                 }
             )
         # Simulate marginal value over replacement, not raw fantasy points.
@@ -577,6 +639,7 @@ class DraftEngine:
                 result["expected_roster_value"] = None
                 result["simulation_samples"] = self.simulation_samples
                 result["components"]["simulation"] = 0.0
+                result["contributions"]["simulation"] = 0.0
                 continue
             result["draft_score"] = round(
                 float(result["draft_score"])
@@ -587,5 +650,8 @@ class DraftEngine:
             result["expected_roster_value"] = round(outcome.expected_roster_value, 1)
             result["simulation_samples"] = self.simulation_samples
             result["components"]["simulation"] = round(future_values[player_id], 3)
+            result["contributions"]["simulation"] = round(
+                self.weights.simulation * future_values[player_id], 4
+            )
         results.sort(key=lambda item: (-float(item["draft_score"]), float(item["adp"])))
         return results[:limit]

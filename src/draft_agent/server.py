@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from .data import demo_players
 from .espn import EspnDraftBridge
@@ -24,7 +25,6 @@ DATA_SOURCE: dict[str, object] = {
     "season": None,
     "cached": False,
 }
-ESPN_BRIDGE = EspnDraftBridge()
 SIGNAL_RECORDS: list[SignalRecord] = []
 PLAYER_PREFERENCES: dict[str, object] = {
     "prefer": [],
@@ -33,6 +33,8 @@ PLAYER_PREFERENCES: dict[str, object] = {
     "mock_exposure_limit": 0,
 }
 PREFERENCE_PATH = Path(".cache/player_preferences.json")
+DECISION_LOG_PATH = Path(".cache/draft_decisions.json")
+ESPN_BRIDGE = EspnDraftBridge(DECISION_LOG_PATH)
 
 
 def _configure_session(session: DraftSession) -> None:
@@ -126,10 +128,18 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b"{}")
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/api/state":
+        request = urlparse(self.path)
+        if request.path == "/api/state":
             self._json(_state_payload())
             return
-        if self.path in {"/", "/index.html"}:
+        if request.path == "/api/decisions":
+            try:
+                limit = int(parse_qs(request.query).get("limit", ["500"])[0])
+                self._json({"decisions": ESPN_BRIDGE.decisions(limit)})
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if request.path in {"/", "/index.html"}:
             body = files("draft_agent").joinpath("web/index.html").read_bytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -205,6 +215,8 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     SESSION.config,
                     SIGNAL_RECORDS,
                 )
+            elif self.path == "/api/espn/pick-result":
+                ESPN_BRIDGE.record_pick_result(body)
             elif self.path == "/api/reset":
                 SESSION = DraftSession(demo_players(), SESSION.config)
                 _configure_session(SESSION)

@@ -125,5 +125,13 @@ command();
 if (selectedId !== 42 || selectionCalls !== 1 || results.at(-1)?.ok !== true) {
   throw new Error("A valid mock pick was not sent");
 }
+if (
+  results.at(-1)?.draft_id !== "MOCK-LEAGUE" ||
+  results.at(-1)?.overall_pick !== 6 ||
+  results.at(-1)?.player_id !== "42" ||
+  results.at(-1)?.name !== "Test Runner"
+) {
+  throw new Error("The successful mock result did not include decision-audit identity");
+}
 
 console.log("mock companion guard tests passed");

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ESPN Draft Agent Shadow Companion",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Preloads ESPN projections and supports guarded automatic picks in mock drafts.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [

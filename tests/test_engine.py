@@ -466,6 +466,148 @@ class EngineTests(unittest.TestCase):
         self.assertIn("value-qb", ranked_ids)
         self.assertNotIn("fair-qb", ranked_ids)
 
+    def test_elite_qb_and_te_starters_block_redundant_backups(self):
+        roster = [
+            Player(
+                "elite-qb",
+                "Elite QB",
+                "AAA",
+                "QB",
+                32,
+                projected_points_override=390,
+                signals={"consensus_rank": 32},
+            ),
+            Player("rb1", "RB One", "BBB", "RB", 20),
+            Player("rb2", "RB Two", "CCC", "RB", 30),
+            Player("wr1", "WR One", "DDD", "WR", 15),
+            Player("wr2", "WR Two", "EEE", "WR", 25),
+            Player(
+                "elite-te",
+                "Elite TE",
+                "FFF",
+                "TE",
+                45,
+                projected_points_override=240,
+                signals={"consensus_rank": 45},
+            ),
+        ]
+        candidates = [
+            Player(
+                "backup-qb",
+                "Backup QB",
+                "GGG",
+                "QB",
+                120,
+                projected_points_override=300,
+                signals={"consensus_rank": 120},
+            ),
+            Player(
+                "backup-te",
+                "Backup TE",
+                "HHH",
+                "TE",
+                130,
+                projected_points_override=180,
+                signals={"consensus_rank": 130},
+            ),
+            Player(
+                "bench-wr",
+                "Bench WR",
+                "III",
+                "WR",
+                155,
+                projected_points_override=170,
+                signals={"consensus_rank": 155},
+            ),
+        ]
+        ranked_ids = {
+            item["id"]
+            for item in DraftEngine(self.config, simulation_samples=50).rank(
+                candidates, roster, 163, 174
+            )
+        }
+        self.assertEqual(ranked_ids, {"bench-wr"})
+
+    def test_weak_qb_and_te_starters_allow_late_upgrades(self):
+        roster = [
+            Player(
+                "weak-qb",
+                "Weak QB",
+                "AAA",
+                "QB",
+                100,
+                projected_points_override=250,
+                signals={"consensus_rank": 100},
+            ),
+            Player("rb1", "RB One", "BBB", "RB", 20),
+            Player("rb2", "RB Two", "CCC", "RB", 30),
+            Player("wr1", "WR One", "DDD", "WR", 15),
+            Player("wr2", "WR Two", "EEE", "WR", 25),
+            Player(
+                "weak-te",
+                "Weak TE",
+                "FFF",
+                "TE",
+                120,
+                projected_points_override=110,
+                signals={"consensus_rank": 120},
+            ),
+        ]
+        candidates = [
+            Player(
+                "qb-upgrade",
+                "QB Upgrade",
+                "GGG",
+                "QB",
+                125,
+                projected_points_override=280,
+                signals={"consensus_rank": 125},
+            ),
+            Player(
+                "te-upgrade",
+                "TE Upgrade",
+                "HHH",
+                "TE",
+                135,
+                projected_points_override=150,
+                signals={"consensus_rank": 135},
+            ),
+        ]
+        ranked = DraftEngine(self.config, simulation_samples=50).rank(
+            candidates, roster, 163, 174
+        )
+        self.assertEqual({item["id"] for item in ranked}, {"qb-upgrade", "te-upgrade"})
+        self.assertTrue(all(item["components"]["lineup_quality"] == 1 for item in ranked))
+
+    def test_lineup_quality_scores_all_positions_and_skill_depth(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        for position in ("QB", "RB", "WR", "TE", "K", "DST"):
+            candidate = Player(
+                f"first-{position}",
+                f"First {position}",
+                "AAA",
+                position,
+                50,
+                projected_points_override=200,
+            )
+            self.assertEqual(engine._lineup_quality(candidate, []), 1.0)
+
+        roster = [
+            Player("rb1", "RB One", "AAA", "RB", 10, projected_points_override=250),
+            Player("rb2", "RB Two", "BBB", "RB", 20, projected_points_override=200),
+            Player("wr1", "WR One", "CCC", "WR", 15, projected_points_override=240),
+            Player("wr2", "WR Two", "DDD", "WR", 25, projected_points_override=220),
+            Player("wr3", "WR Three", "EEE", "WR", 40, projected_points_override=210),
+        ]
+        upgrade = Player(
+            "rb-upgrade", "RB Upgrade", "FFF", "RB", 50, projected_points_override=230
+        )
+        depth = Player(
+            "rb-depth", "RB Depth", "GGG", "RB", 80, projected_points_override=150
+        )
+        self.assertEqual(engine._lineup_quality(upgrade, roster), 1.0)
+        self.assertLess(engine._lineup_quality(depth, roster), 1.0)
+
     def test_market_guardrail_blocks_large_reach_and_has_safe_fallback(self):
         engine = DraftEngine(self.config, simulation_samples=50)
         sensible = Player(
@@ -639,6 +781,13 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(first[0]["simulation_samples"], 50)
         self.assertIsNotNone(first[0]["survival_probability"])
         self.assertIn("simulation", first[0]["components"])
+        self.assertIn("lineup_quality", first[0]["components"])
+        self.assertIn("lineup_quality", first[0]["contributions"])
+        self.assertAlmostEqual(
+            first[0]["draft_score"],
+            sum(first[0]["contributions"].values()),
+            places=3,
+        )
 
 
 if __name__ == "__main__":

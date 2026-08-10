@@ -1,5 +1,7 @@
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from draft_agent.config import LeagueConfig
 from draft_agent.data import demo_players
@@ -160,6 +162,64 @@ class EspnBridgeTests(unittest.TestCase):
         real["is_mock"] = False
         real_state = self.bridge.ingest(real, self.players, self.engine, self.config)
         self.assertFalse(real_state["is_mock"])
+
+    def test_decision_audit_covers_all_positions_reconciles_and_persists(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "decisions.json"
+            bridge = EspnDraftBridge(path)
+            payload = self.payload()
+            payload["is_mock"] = True
+            state = bridge.ingest(payload, self.players, self.engine, self.config)
+
+            self.assertEqual(state["decision_log"]["total"], 1)
+            first = bridge.decisions()[0]
+            self.assertEqual(set(first["top_by_position"]), set(bridge.positions))
+            self.assertEqual(len(first["top_overall"]), 5)
+            self.assertIn("components", first["recommended_player"])
+            self.assertIn("contributions", first["recommended_player"])
+            self.assertTrue(path.exists())
+
+            selected_id = state["pending_espn_player_id"]
+            bridge.record_pick_result(
+                {
+                    "ok": True,
+                    "league_id": payload["league_id"],
+                    "draft_id": payload["draft_id"],
+                    "overall_pick": payload["overall_pick"],
+                    "player_id": selected_id,
+                    "name": state["recommendations"][0]["name"],
+                }
+            )
+            self.assertEqual(bridge.decisions()[0]["status"], "submitted")
+
+            followup = self.payload()
+            followup["is_mock"] = True
+            followup["overall_pick"] = 7
+            followup["on_clock"] = False
+            followup["available_player_ids"].remove(selected_id)
+            followup["roster_player_ids"] = [selected_id]
+            followup_state = bridge.ingest(
+                followup, self.players, self.engine, self.config
+            )
+            decisions = bridge.decisions()
+            self.assertEqual(decisions[0]["status"], "selected")
+            self.assertTrue(decisions[0]["matched_recommendation"])
+            self.assertEqual(followup_state["decision_log"]["total"], 2)
+
+            reloaded = EspnDraftBridge(path)
+            self.assertEqual(reloaded.decision_summary()["total"], 2)
+            self.assertEqual(reloaded.decisions()[0]["selected_player"]["espn_id"], selected_id)
+
+    def test_pick_result_requires_matching_record(self):
+        with self.assertRaisesRegex(ValueError, "recorded decision"):
+            self.bridge.record_pick_result(
+                {
+                    "ok": True,
+                    "draft_id": "missing",
+                    "overall_pick": 6,
+                    "player_id": "1000",
+                }
+            )
 
 
 if __name__ == "__main__":

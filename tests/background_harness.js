@@ -9,6 +9,7 @@ const commands = [];
 const syncMessages = [];
 const statuses = [];
 const injections = [];
+const fetchRequests = [];
 let installedListener = null;
 let updatedListener = null;
 class FakeDate extends Date {
@@ -17,13 +18,16 @@ class FakeDate extends Date {
 const context = {
   console,
   Date: FakeDate,
-  fetch: async () => ({
-    ok: true,
-    json: async () => ({
-      espn: { pending_espn_player_id: "42", match_rate: 1 },
-      settings: { override_seconds: 5 }
-    })
-  }),
+  fetch: async (url, options) => {
+    fetchRequests.push({ url, options });
+    return {
+      ok: true,
+      json: async () => ({
+        espn: { pending_espn_player_id: "42", match_rate: 1 },
+        settings: { override_seconds: 5 }
+      })
+    };
+  },
   chrome: {
     storage: {
       local: {
@@ -86,6 +90,21 @@ function sendSnapshot() {
     throw new Error("Mock pick did not fire after the override period");
   }
   if (statuses.length !== 3) throw new Error("Each accepted snapshot should update status");
+  runtimeListener({
+    type: "DRAFT_AGENT_PICK_RESULT",
+    result: {
+      ok: true,
+      league_id: "MOCK",
+      draft_id: "MOCK",
+      overall_pick: 6,
+      player_id: "42",
+      name: "Test Runner"
+    }
+  }, {}, () => {});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (!fetchRequests.some((request) => request.url.endsWith("/api/espn/pick-result"))) {
+    throw new Error("Successful mock selection was not sent to the local decision audit");
+  }
   console.log("background bridge tests passed");
 })().catch((error) => {
   console.error(error);
