@@ -9,6 +9,7 @@ from .config import LeagueConfig
 from .engine import DraftEngine
 from .models import Player
 from .scoring import projected_points
+from .signals import SignalRecord, apply_signals
 
 
 class EspnDraftBridge:
@@ -127,6 +128,7 @@ class EspnDraftBridge:
         players: list[Player],
         engine: DraftEngine,
         config: LeagueConfig,
+        signal_records: list[SignalRecord] | None = None,
     ) -> dict[str, object]:
         league_id = str(payload.get("league_id") or "").strip()
         draft_id = str(payload.get("draft_id") or "").strip()
@@ -152,6 +154,11 @@ class EspnDraftBridge:
             raise ValueError("a player cannot be both available and on the roster")
 
         merged_players, enrichment_rate, signal_rate = self._catalog(payload, players)
+        if signal_records:
+            merged_players, _ = apply_signals(merged_players, signal_records)
+            signal_rate = sum(bool(player.signals) for player in merged_players) / len(
+                merged_players
+            )
         by_espn_id = {
             player.external_ids["espn"]: player
             for player in merged_players

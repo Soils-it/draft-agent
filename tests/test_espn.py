@@ -5,6 +5,7 @@ from draft_agent.config import LeagueConfig
 from draft_agent.data import demo_players
 from draft_agent.engine import DraftEngine
 from draft_agent.espn import EspnDraftBridge
+from draft_agent.signals import SignalRecord
 
 
 class EspnBridgeTests(unittest.TestCase):
@@ -98,10 +99,30 @@ class EspnBridgeTests(unittest.TestCase):
         payload["available_player_ids"] = ["rookie-2026", "-16001"] + payload[
             "available_player_ids"
         ]
-        state = self.bridge.ingest(payload, self.players, self.engine, self.config)
+        signals = [
+            SignalRecord(
+                "Example Rookie",
+                "NYJ",
+                "RB",
+                {"espn": "rookie-2026"},
+                {"consensus_rank": 8, "years_exp": 0, "depth_chart_order": 1},
+                {"practice": "Full"},
+            )
+        ]
+        state = self.bridge.ingest(
+            payload, self.players, self.engine, self.config, signals
+        )
         self.assertEqual(state["match_rate"], 1)
         self.assertLess(state["historical_enrichment_rate"], 1)
+        self.assertGreater(state["signal_enrichment_rate"], 0)
         self.assertIn("rookie-2026", state["prequeue_espn_player_ids"])
+        rookie = next(
+            player
+            for player in state["recommendations"]
+            if player["espn_id"] == "rookie-2026"
+        )
+        self.assertEqual(rookie["signals"]["years_exp"], 0)
+        self.assertEqual(rookie["signals"]["depth_chart_order"], 1)
 
     def test_rejects_duplicate_catalog_ids(self):
         payload = self.payload()

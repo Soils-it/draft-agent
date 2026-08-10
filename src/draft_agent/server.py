@@ -11,7 +11,7 @@ from typing import Any
 from .data import demo_players
 from .espn import EspnDraftBridge
 from .providers import NflverseProvider
-from .signals import FreeSignalProvider, apply_signals
+from .signals import FreeSignalProvider, SignalRecord, apply_signals
 from .session import DraftSession
 
 
@@ -24,6 +24,7 @@ DATA_SOURCE: dict[str, object] = {
     "cached": False,
 }
 ESPN_BRIDGE = EspnDraftBridge()
+SIGNAL_RECORDS: list[SignalRecord] = []
 
 
 def _state_payload() -> dict[str, object]:
@@ -90,7 +91,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        global DATA_SOURCE, OVERRIDE_SECONDS, SESSION, SIMULATION_SAMPLES
+        global DATA_SOURCE, OVERRIDE_SECONDS, SESSION, SIGNAL_RECORDS, SIMULATION_SAMPLES
         try:
             body = self._body()
             if self.path == "/api/pick":
@@ -127,6 +128,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 }
             elif self.path == "/api/data/signals":
                 result = FreeSignalProvider().load(bool(body.get("refresh", False)))
+                SIGNAL_RECORDS = result.records
                 enriched, matched = apply_signals(list(SESSION.players.values()), result.records)
                 SESSION = DraftSession(enriched, SESSION.config)
                 SESSION.engine.simulation_samples = SIMULATION_SAMPLES
@@ -144,6 +146,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     list(SESSION.players.values()),
                     SESSION.engine,
                     SESSION.config,
+                    SIGNAL_RECORDS,
                 )
             elif self.path == "/api/reset":
                 SESSION = DraftSession(demo_players(), SESSION.config)
