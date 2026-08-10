@@ -116,9 +116,12 @@ its component scores. The model is deterministic for the same draft state and
 settings.
 
 The default 12-team, 1-QB roster-construction profile also prevents raw QB
-scoring from dominating cross-position comparisons. It delays the first QB
-until round 4, blocks a backup QB through round 12 and then requires that a
-backup has fallen at least 20 picks below consensus, reserves K and D/ST for
+scoring from dominating cross-position comparisons. It normally delays the
+first QB until round 4, but permits a top-36 consensus QB earlier when that
+player falls at least 12 picks below consensus. It blocks a backup QB through
+round 12 and then requires that backup to have fallen at least 20 picks below
+consensus. After a WR-WR opening, a third WR is deferred until RB1 unless the
+receiver has fallen at least 10 picks. The profile reserves K and D/ST for
 rounds 15-16, requires RB1/WR1 by round 4 and RB2/WR2 by rounds 6-7, and caps
 the planned RB bench at five. TE urgency increases across rounds 8-10 and
 reacts to projected tier cliffs. A market guardrail limits reaches to 12 picks

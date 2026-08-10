@@ -95,7 +95,21 @@ class DraftEngine:
             if counts[position] and current_pick - self._market_rank(player) < 20:
                 return -1.0
             if not counts[position] and round_number < 4:
-                return -1.0
+                market_rank = self._market_rank(player)
+                early_value = market_rank <= 36 and current_pick - market_rank >= 12
+                if not early_value:
+                    return -1.0
+        # After starting WR-WR, prioritize an RB instead of taking a third WR
+        # at ordinary market value. Preserve the exception for a true draft-day
+        # faller so roster construction never forces us to ignore a bargain.
+        if (
+            position == "WR"
+            and counts["WR"] >= 2
+            and counts["RB"] == 0
+            and round_number < 4
+            and current_pick - self._market_rank(player) < 10
+        ):
+            return -1.0
         if position == "TE" and counts[position] and round_number < 13:
             return -1.0
         if position in {"K", "DST"}:

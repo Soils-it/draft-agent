@@ -63,7 +63,7 @@ class EngineTests(unittest.TestCase):
         self.assertGreater(ranked["healthy"]["components"]["availability"], ranked["hurt"]["components"]["availability"])
 
     def test_one_qb_strategy_blocks_early_qbs_and_early_backup(self):
-        elite_qb = Player("elite-qb", "Elite QB", "BUF", "QB", 5, projected_points_override=400)
+        elite_qb = Player("elite-qb", "Elite QB", "BUF", "QB", 20, projected_points_override=400)
         rb = Player("rb", "Starting RB", "DET", "RB", 20, projected_points_override=270)
         engine = DraftEngine(self.config, simulation_samples=50)
         self.assertEqual(engine.rank([elite_qb, rb], [], 19, 30, 1)[0]["id"], "rb")
@@ -71,6 +71,74 @@ class EngineTests(unittest.TestCase):
         roster = [Player("my-qb", "My QB", "KC", "QB", 1, projected_points_override=390)]
         ranked_ids = {item["id"] for item in engine.rank([elite_qb, rb], roster, 43, 54)}
         self.assertNotIn("elite-qb", ranked_ids)
+
+    def test_fallen_elite_qb_is_available_before_round_four(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"consensus": 1})
+        candidates = [
+            Player(
+                "fallen-qb",
+                "Fallen QB",
+                "AAA",
+                "QB",
+                15,
+                projected_points_override=390,
+                signals={"consensus_rank": 15},
+            ),
+            Player(
+                "rb",
+                "Starting RB",
+                "BBB",
+                "RB",
+                25,
+                projected_points_override=250,
+                signals={"consensus_rank": 25},
+            ),
+        ]
+        ranked = engine.rank(candidates, [], 30, 43)
+        self.assertEqual(ranked[0]["id"], "fallen-qb")
+
+    def test_third_early_wr_requires_discount_before_first_rb(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        roster = [
+            Player("wr1", "WR One", "AAA", "WR", 10),
+            Player("wr2", "WR Two", "BBB", "WR", 15),
+        ]
+        regular_wr = Player(
+            "regular-wr",
+            "Regular WR",
+            "CCC",
+            "WR",
+            35,
+            projected_points_override=300,
+            signals={"consensus_rank": 35},
+        )
+        rb = Player(
+            "rb",
+            "Starting RB",
+            "DDD",
+            "RB",
+            40,
+            projected_points_override=200,
+            signals={"consensus_rank": 40},
+        )
+        ranked = engine.rank([regular_wr, rb], roster, 36, 49)
+        self.assertEqual([item["id"] for item in ranked], ["rb"])
+
+        fallen_wr = Player(
+            "fallen-wr",
+            "Fallen WR",
+            "EEE",
+            "WR",
+            20,
+            projected_points_override=300,
+            signals={"consensus_rank": 20},
+        )
+        ranked_ids = {
+            item["id"] for item in engine.rank([fallen_wr, rb], roster, 36, 49)
+        }
+        self.assertIn("fallen-wr", ranked_ids)
 
     def test_backup_qb_requires_twenty_pick_market_discount(self):
         roster = [
