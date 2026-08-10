@@ -145,12 +145,22 @@ def merge_sleeper_data(
         depth = _float(item.get("depth_chart_order"))
         if depth is not None:
             record.values["depth_chart_order"] = depth
+        for target, key in (
+            ("years_exp", "years_exp"),
+            ("age", "age"),
+            ("news_updated_epoch", "news_updated"),
+        ):
+            value = _float(item.get(key))
+            if value is not None:
+                record.values[target] = value
         record.values["trend_adds_24h"] = add_counts.get(sleeper_id, 0)
         record.values["trend_drops_24h"] = drop_counts.get(sleeper_id, 0)
         for target, key in (
             ("injury_status", "injury_status"),
             ("injury_body_part", "injury_body_part"),
             ("practice", "practice_participation"),
+            ("practice_description", "practice_description"),
+            ("depth_chart_position", "depth_chart_position"),
             ("nfl_status", "status"),
         ):
             value = item.get(key)

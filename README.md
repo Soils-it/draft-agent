@@ -106,6 +106,7 @@ Each available player receives normalized component scores for:
 - roster need
 - likelihood the player is gone before the next selection
 - injury/availability, bye-week fit, and Sleeper add/drop trends
+- low-weight rookie camp role from depth-chart order and practice participation
 - deterministic Monte Carlo value of this pick plus the next-turn options
 - upside
 - risk (subtracted)
@@ -116,11 +117,21 @@ settings.
 
 The default 12-team, 1-QB roster-construction profile also prevents raw QB
 scoring from dominating cross-position comparisons. It delays the first QB
-until round 4, blocks a backup QB or TE through round 12, reserves K and D/ST
-for rounds 15-16, requires RB1/WR1 by round 4 and RB2/WR2 by rounds 6-7, and
-caps the planned RB bench at five. RB replacement value is calculated deeper
-than QB replacement value to reflect two RB starters, FLEX demand, and the
-league's stronger RB scarcity.
+until round 4, blocks a backup QB through round 12 and then requires that a
+backup has fallen at least 20 picks below consensus, reserves K and D/ST for
+rounds 15-16, requires RB1/WR1 by round 4 and RB2/WR2 by rounds 6-7, and caps
+the planned RB bench at five. TE urgency increases across rounds 8-10 and
+reacts to projected tier cliffs. A market guardrail limits reaches to 12 picks
+through round 8, 20 picks through round 12, and 35 picks afterward, with a
+fallback when a forced lineup requirement has no candidate in range. RB
+replacement value is calculated deeper than QB replacement value to reflect
+two RB starters, FLEX demand, and the league's stronger RB scarcity.
+
+Rookie camp information is intentionally a supporting signal, not a primary
+ranking. The free Sleeper feed supplies rookie experience, current depth-chart
+order, practice participation, injury context, and 24-hour add/drop movement.
+Those structured fields can move close decisions without allowing a single
+camp report to overpower projections, consensus, or roster construction.
 
 Monte Carlo trials are adjustable from 50 to 2,000 in Draft Settings. The
 default 200-trial calculation is deterministic and normally completes well

@@ -72,6 +72,107 @@ class EngineTests(unittest.TestCase):
         ranked_ids = {item["id"] for item in engine.rank([elite_qb, rb], roster, 43, 54)}
         self.assertNotIn("elite-qb", ranked_ids)
 
+    def test_backup_qb_requires_twenty_pick_market_discount(self):
+        roster = [
+            Player("my-qb", "My QB", "AAA", "QB", 80),
+            Player("rb1", "RB One", "BBB", "RB", 20),
+            Player("rb2", "RB Two", "CCC", "RB", 30),
+            Player("wr1", "WR One", "DDD", "WR", 15),
+            Player("wr2", "WR Two", "EEE", "WR", 25),
+            Player("te1", "TE One", "FFF", "TE", 90),
+        ]
+        candidates = [
+            Player("value-qb", "Value QB", "GGG", "QB", 120, signals={"consensus_rank": 120}),
+            Player("fair-qb", "Fair QB", "HHH", "QB", 130, signals={"consensus_rank": 130}),
+            Player("wr3", "WR Three", "III", "WR", 140, signals={"consensus_rank": 140}),
+        ]
+        ranked_ids = {
+            item["id"]
+            for item in DraftEngine(self.config, simulation_samples=50).rank(
+                candidates, roster, 145, 156
+            )
+        }
+        self.assertIn("value-qb", ranked_ids)
+        self.assertNotIn("fair-qb", ranked_ids)
+
+    def test_market_guardrail_blocks_large_reach_and_has_safe_fallback(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        sensible = Player(
+            "sensible",
+            "Sensible WR",
+            "AAA",
+            "WR",
+            75,
+            projected_points_override=180,
+            signals={"consensus_rank": 75},
+        )
+        reach = Player(
+            "reach",
+            "Reach WR",
+            "BBB",
+            "WR",
+            100,
+            projected_points_override=300,
+            signals={"consensus_rank": 100},
+        )
+        ranked = engine.rank([sensible, reach], [], 70, 79)
+        self.assertEqual([item["id"] for item in ranked], ["sensible"])
+        self.assertEqual(ranked[0]["market_reach_limit"], 12)
+        fallback = engine.rank([reach], [], 70, 79)
+        self.assertEqual(fallback[0]["id"], "reach")
+        self.assertEqual(fallback[0]["market_reach"], 30)
+
+    def test_te_tier_urgency_applies_in_rounds_eight_through_ten(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"te_urgency": 1})
+        candidates = [
+            Player("te", "Tier TE", "AAA", "TE", 90, projected_points_override=180),
+            Player("wr", "Bench WR", "BBB", "WR", 90, projected_points_override=180),
+        ]
+        roster = [
+            Player("rb1", "RB One", "CCC", "RB", 10),
+            Player("rb2", "RB Two", "DDD", "RB", 20),
+            Player("wr1", "WR One", "EEE", "WR", 15),
+            Player("wr2", "WR Two", "FFF", "WR", 25),
+        ]
+        ranked = engine.rank(candidates, roster, 97, 108)
+        self.assertEqual(ranked[0]["id"], "te")
+        self.assertGreater(ranked[0]["components"]["te_urgency"], 0)
+
+    def test_rookie_camp_role_rewards_first_team_depth(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"rookie_camp_role": 1})
+        candidates = [
+            Player(
+                "first-team",
+                "First Team Rookie",
+                "AAA",
+                "WR",
+                70,
+                projected_points_override=180,
+                signals={"years_exp": 0, "depth_chart_order": 1},
+                context={"practice": "Full"},
+            ),
+            Player(
+                "third-team",
+                "Third Team Rookie",
+                "BBB",
+                "WR",
+                70,
+                projected_points_override=180,
+                signals={"years_exp": 0, "depth_chart_order": 3},
+                context={"practice": "Limited"},
+            ),
+        ]
+        ranked = engine.rank(candidates, [], 70, 79)
+        self.assertEqual(ranked[0]["id"], "first-team")
+        self.assertGreater(
+            ranked[0]["components"]["rookie_camp_role"],
+            ranked[1]["components"]["rookie_camp_role"],
+        )
+
     def test_roster_deadlines_force_second_rb_and_late_specialists(self):
         engine = DraftEngine(self.config, simulation_samples=50)
         roster = [

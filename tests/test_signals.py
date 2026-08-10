@@ -35,12 +35,27 @@ class SignalTests(unittest.TestCase):
         record = SignalRecord("Example", "DET", "WR", {"sleeper": "789"})
         merge_sleeper_data(
             [record],
-            {"789": {"injury_status": "Questionable", "depth_chart_order": 1, "espn_id": 456}},
+            {
+                "789": {
+                    "injury_status": "Questionable",
+                    "depth_chart_order": 1,
+                    "depth_chart_position": "LWR",
+                    "years_exp": 0,
+                    "age": 22,
+                    "practice_participation": "Full",
+                    "practice_description": "Full participant",
+                    "espn_id": 456,
+                }
+            },
             [{"player_id": "789", "count": 25}],
             [{"player_id": "789", "count": 3}],
         )
         self.assertEqual(record.context["injury_status"], "Questionable")
         self.assertEqual(record.values["trend_adds_24h"], 25)
+        self.assertEqual(record.values["years_exp"], 0)
+        self.assertEqual(record.values["depth_chart_order"], 1)
+        self.assertEqual(record.context["practice"], "Full")
+        self.assertEqual(record.context["depth_chart_position"], "LWR")
         self.assertEqual(record.external_ids["espn"], "456")
 
     def test_matches_espn_id_before_name_and_safe_name_fallback(self):

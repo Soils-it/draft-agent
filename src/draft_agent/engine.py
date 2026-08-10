@@ -17,12 +17,14 @@ class StrategyWeights:
     vor: float = 0.18
     scarcity: float = 0.10
     tier_drop: float = 0.08
+    te_urgency: float = 0.10
     roster_need: float = 0.12
     position_value: float = 0.12
     gone_next_pick: float = 0.08
     availability: float = 0.06
     bye_fit: float = 0.02
     trend: float = 0.02
+    rookie_camp_role: float = 0.04
     upside: float = 0.05
     risk: float = 0.07
     simulation: float = 0.12
@@ -60,7 +62,25 @@ class DraftEngine:
             return {key: 0.5 for key in values}
         return {key: (value - low) / (high - low) for key, value in values.items()}
 
-    def _roster_need(self, player: Player, roster: list[Player], round_number: int) -> float:
+    @staticmethod
+    def _market_rank(player: Player) -> float:
+        return player.signals.get("consensus_rank", player.adp)
+
+    @staticmethod
+    def _market_reach_limit(round_number: int) -> int:
+        if round_number <= 8:
+            return 12
+        if round_number <= 12:
+            return 20
+        return 35
+
+    def _roster_need(
+        self,
+        player: Player,
+        roster: list[Player],
+        round_number: int,
+        current_pick: int,
+    ) -> float:
         counts = Counter(item.position for item in roster)
         position = player.position
         if counts[position] >= self.config.position_caps[position]:
@@ -69,6 +89,10 @@ class DraftEngine:
         # option, never a reason to pass on starting RB/WR talent in rounds 1-12.
         if position == "QB":
             if counts[position] and round_number < 13:
+                return -1.0
+            # A second quarterback is optional in a 1-QB league. Only spend the
+            # roster spot when the market has let one fall at least 20 picks.
+            if counts[position] and current_pick - self._market_rank(player) < 20:
                 return -1.0
             if not counts[position] and round_number < 4:
                 return -1.0
@@ -105,7 +129,7 @@ class DraftEngine:
             required.add("RB")
         if round_number >= 10 and counts["QB"] < 1:
             required.add("QB")
-        if round_number >= 11 and counts["TE"] < 1:
+        if round_number >= 10 and counts["TE"] < 1:
             required.add("TE")
         if round_number >= 15:
             required.update(position for position in ("K", "DST") if counts[position] < 1)
@@ -132,6 +156,51 @@ class DraftEngine:
         if position == "TE":
             return 0.6 if counts[position] == 0 else 0.12
         return 0.05
+
+    @staticmethod
+    def _te_urgency(
+        player: Player,
+        roster: list[Player],
+        round_number: int,
+        tier_drop: float,
+    ) -> float:
+        if player.position != "TE" or any(item.position == "TE" for item in roster):
+            return 0.0
+        if round_number not in {8, 9, 10}:
+            return 0.0
+        stage = {8: 0.55, 9: 0.78, 10: 1.0}[round_number]
+        # Escalate as the deadline approaches, with extra weight for the last
+        # player before a meaningful projected tier drop.
+        return stage * (0.65 + 0.35 * tier_drop)
+
+    @staticmethod
+    def _rookie_camp_role(player: Player) -> float:
+        years_exp = player.signals.get("years_exp")
+        if years_exp is None or years_exp > 0:
+            return 0.5
+
+        depth_order = player.signals.get("depth_chart_order")
+        if depth_order is None:
+            depth_score = 0.45
+        elif depth_order <= 1:
+            depth_score = 1.0
+        elif depth_order <= 2:
+            depth_score = 0.72
+        elif depth_order <= 3:
+            depth_score = 0.42
+        else:
+            depth_score = 0.18
+
+        practice = player.context.get("practice", "").lower()
+        if "full" in practice:
+            practice_score = 1.0
+        elif "limited" in practice:
+            practice_score = 0.62
+        elif "did not" in practice or "dnp" in practice:
+            practice_score = 0.1
+        else:
+            practice_score = 0.5
+        return depth_score * 0.75 + practice_score * 0.25
 
     @staticmethod
     def _availability(player: Player) -> float:
@@ -169,9 +238,21 @@ class DraftEngine:
         eligible = [
             player
             for player in available
-            if self._roster_need(player, roster, round_number) >= 0
+            if self._roster_need(player, roster, round_number, current_pick) >= 0
             and (not required_positions or player.position in required_positions)
         ]
+        # Use consensus/ADP as a guardrail rather than letting a noisy model
+        # component reach multiple rounds. If a forced roster requirement has
+        # no player inside the band, retain the original pool so the draft can
+        # still complete a legal lineup.
+        reach_limit = self._market_reach_limit(round_number)
+        market_eligible = [
+            player
+            for player in eligible
+            if self._market_rank(player) - current_pick <= reach_limit
+        ]
+        if market_eligible:
+            eligible = market_eligible
         points = {p.player_id: projected_points(p) for p in eligible}
         by_position: dict[str, list[Player]] = defaultdict(list)
         for player in eligible:
@@ -224,12 +305,19 @@ class DraftEngine:
         picks_away = max(next_pick - current_pick, 1)
         for player in eligible:
             # Logistic approximation: earlier ADP and a longer wait increase the chance gone.
-            market_rank = player.signals.get("consensus_rank", player.adp)
+            market_rank = self._market_rank(player)
             blended_rank = market_rank * 0.7 + player.adp * 0.3
             uncertainty = min(player.signals.get("consensus_sd", 8.0) / 30, 1.0)
             gone = 1 / (1 + math.exp((blended_rank - (current_pick + picks_away * 0.55)) / (6.5 + 4 * uncertainty)))
-            roster_need = self._roster_need(player, roster, round_number)
+            roster_need = self._roster_need(player, roster, round_number, current_pick)
             position_value = self._position_value(player, roster, round_number)
+            te_urgency = self._te_urgency(
+                player,
+                roster,
+                round_number,
+                components["tier_drop"][player.player_id],
+            )
+            rookie_camp_role = self._rookie_camp_role(player)
             availability = self._availability(player)
             bye_fit = self._bye_fit(player, roster)
             effective_risk = min(1.0, player.risk + (1 - availability) * 0.7 + uncertainty * 0.15)
@@ -239,12 +327,14 @@ class DraftEngine:
                 + self.weights.vor * components["vor"][player.player_id]
                 + self.weights.scarcity * components["scarcity"][player.player_id]
                 + self.weights.tier_drop * components["tier_drop"][player.player_id]
+                + self.weights.te_urgency * te_urgency
                 + self.weights.roster_need * roster_need
                 + self.weights.position_value * position_value
                 + self.weights.gone_next_pick * gone
                 + self.weights.availability * availability
                 + self.weights.bye_fit * bye_fit
                 + self.weights.trend * components["trend"][player.player_id]
+                + self.weights.rookie_camp_role * rookie_camp_role
                 + self.weights.upside * player.upside
                 - self.weights.risk * effective_risk
             )
@@ -254,12 +344,14 @@ class DraftEngine:
                 "vor": components["vor"][player.player_id],
                 "scarcity": components["scarcity"][player.player_id],
                 "tier_drop": components["tier_drop"][player.player_id],
+                "te_urgency": te_urgency,
                 "roster_need": roster_need,
                 "position_value": position_value,
                 "gone_next_pick": gone,
                 "availability": availability,
                 "bye_fit": bye_fit,
                 "trend": components["trend"][player.player_id],
+                "rookie_camp_role": rookie_camp_role,
                 "upside": player.upside,
                 "risk": effective_risk,
             }
@@ -267,6 +359,9 @@ class DraftEngine:
                 {
                     **player.as_dict(),
                     "projected_points": round(points[player.player_id], 1),
+                    "market_rank": round(market_rank, 1),
+                    "market_reach": round(max(0.0, market_rank - current_pick), 1),
+                    "market_reach_limit": reach_limit,
                     "draft_score": round(score, 4),
                     "components": {key: round(value, 3) for key, value in detail.items()},
                 }
