@@ -29,11 +29,11 @@ document.querySelector("#save").addEventListener("click", async () => {
         world: "ISOLATED"
       });
       await chrome.tabs.sendMessage(tab.id, { type: "DRAFT_AGENT_SYNC" });
-    } catch (_error) {
+    } catch (error) {
       await chrome.storage.local.set({
         draftAgentLastStatus: {
           ok: false,
-          message: "Open an ESPN fantasy draft page before syncing.",
+          message: String(error?.message || error || "Companion injection failed."),
           at: new Date().toISOString()
         }
       });

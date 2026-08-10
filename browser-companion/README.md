@@ -30,9 +30,10 @@ currently on the clock.
 6. To test automatic drafting, separately enable **automatic picks in mock
    drafts**. Leave it off for observation-only use.
 
-**Save and sync** reinjects the current unpacked scripts into the active ESPN
-tab. This makes extension reloads reliable without depending on whether Chrome
-kept older content scripts attached to an already-open draft page.
+**Save and sync** injects one current page observer and one content bridge into
+the active ESPN tab. The manifest does not auto-inject scripts, avoiding stale
+or duplicated extension contexts after an unpacked-extension reload. Click the
+button once after entering each new draft room.
 
 The controller waits for the configured override period. A manual ESPN pick
 during that window makes its command stale and therefore harmless. Immediately
