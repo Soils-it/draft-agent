@@ -139,6 +139,28 @@ class EspnBridgeTests(unittest.TestCase):
         self.assertEqual(state["roster"][0]["espn_id"], roster_id)
         self.assertIn("projected_points", state["roster"][0])
 
+    def test_mock_exposure_limit_uses_prior_mock_rosters_only(self):
+        self.bridge.configure_mock_exposure(50)
+        first = self.payload()
+        first["is_mock"] = True
+        exposed_id = first["available_player_ids"].pop(0)
+        first["roster_player_ids"] = [exposed_id]
+        self.bridge.ingest(first, self.players, self.engine, self.config)
+
+        second = self.payload()
+        second["is_mock"] = True
+        second["draft_id"] = "second-mock"
+        second["league_id"] = "second-mock"
+        state = self.bridge.ingest(second, self.players, self.engine, self.config)
+        self.assertEqual(state["mock_history_count"], 1)
+        self.assertEqual(state["mock_exposure_limit"], 0.5)
+        self.assertNotIn(exposed_id, state["prequeue_espn_player_ids"])
+
+        real = self.payload()
+        real["is_mock"] = False
+        real_state = self.bridge.ingest(real, self.players, self.engine, self.config)
+        self.assertFalse(real_state["is_mock"])
+
 
 if __name__ == "__main__":
     unittest.main()

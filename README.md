@@ -100,7 +100,8 @@ python -m unittest discover -s tests -v
 Each available player receives normalized component scores for:
 
 - projected fantasy points
-- pick-relative full-PPR expert consensus, analyst uncertainty, and reach cost
+- pick-relative full-PPR expert consensus, best-available market quality,
+  analyst uncertainty, and reach cost
 - value over replacement (VOR)
 - positional scarcity and nearby tier drop
 - roster need
@@ -110,6 +111,7 @@ Each available player receives normalized component scores for:
 - deterministic Monte Carlo value of this pick plus the next-turn options
 - upside
 - risk (subtracted)
+- personal prefer/fade rules and optional mock exposure (when configured)
 
 Every weight is adjustable in the dashboard, and every recommendation exposes
 its component scores. The model is deterministic for the same draft state and
@@ -117,12 +119,15 @@ settings.
 
 Consensus is anchored to the current selection rather than normalized across
 the full draft pool. This makes the difference between RB2 and WR10 meaningful
-at pick 2. Projection, VOR, scarcity, tier drop, and turn simulation use smaller
+at pick 2. Best-available market quality preserves ordering between two players
+who have both fallen, and a same-position dominance penalty favors the player
+with meaningfully better consensus unless the alternative projects at least
+10% higher. Projection, VOR, scarcity, tier drop, and turn simulation use smaller
 weights because they are correlated views of the same underlying projection.
 The default replacement baselines value RB42 versus WR36 to reflect the faster
 loss of usable RB volume in this league. Reaches are limited to six picks in
-rounds 1-4 and receive an explicit score penalty. IR/PUP players are excluded
-through round 12 when a healthy candidate is available.
+round 1, ten in rounds 2-4, and receive an explicit score penalty. IR/PUP
+players are excluded through round 12 when a healthy candidate is available.
 
 The default 12-team, 1-QB roster-construction profile also prevents raw QB
 scoring from dominating cross-position comparisons. It normally delays the
@@ -130,16 +135,26 @@ first QB until round 4, but permits a top-36 consensus QB earlier when that
 player falls at least 12 picks below consensus. It blocks a backup QB through
 round 12 and then requires that backup to have fallen at least 20 picks below
 consensus. The opening remains value-based between RB and WR, including an
-elite first-round WR, but requires RB1/WR1 by round 3 and a 2-RB/2-WR core by
-round 4. TE is deferred until that foundation is complete; an exceptional
-early QB can move completion to round 5 only after RB1 and WR1 are secured.
-The profile reserves K and D/ST for rounds 15-16 and caps the planned RB bench
-at five. TE urgency increases across rounds 8-10 and reacts to projected tier
-cliffs. A market guardrail limits reaches to six picks through round 4, 12
-picks through round 8, 20 picks through round 12, and 35 picks afterward, with
-a fallback when a forced lineup requirement has no candidate in range. RB
-replacement value is calculated deeper than QB replacement value to reflect
-two RB starters, FLEX demand, and the league's stronger RB scarcity.
+elite first-round WR. After a first-round WR, a reasonably priced RB receives a
+strong round-2 anchor bonus. RB1/WR1 are targeted by round 3 and a 2-RB/2-WR
+core by round 6, but the engine relaxes that target instead of forcing a reach
+beyond ten picks. TE becomes available in round 4, gains tier urgency through
+rounds 8-12, and is not forced until round 13. The profile reserves K and D/ST
+for rounds 15-16 and caps the planned RB bench at five. A market guardrail
+limits reaches to six picks in round 1, ten through round 4, 12 through round
+8, 20 through round 12, and 35 afterward. RB replacement value is calculated
+deeper than QB replacement value to reflect two RB starters, FLEX demand, and
+the league's stronger RB scarcity.
+
+The Player Preferences panel accepts comma-separated **Prefer**, **Fade**, and
+**Never draft** names. Prefer/fade adjustments are intentionally strong enough
+to represent the user's player evaluation; never-draft entries are removed
+from consideration. An optional exposure percentage applies only to ESPN mock
+drafts and avoids players already selected at or above that rate across prior
+mocks observed during the current server run. Keep exposure at 0% for the real
+draft or when repeated best-value selections are desired. Player preferences
+are persisted locally under the ignored `.cache/` directory; exposure history
+resets with the Python server.
 
 Rookie camp information is intentionally a supporting signal, not a primary
 ranking. The free Sleeper feed supplies rookie experience, current depth-chart

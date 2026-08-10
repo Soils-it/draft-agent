@@ -6,6 +6,7 @@ from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 from .data import demo_players
@@ -25,6 +26,54 @@ DATA_SOURCE: dict[str, object] = {
 }
 ESPN_BRIDGE = EspnDraftBridge()
 SIGNAL_RECORDS: list[SignalRecord] = []
+PLAYER_PREFERENCES: dict[str, object] = {
+    "prefer": [],
+    "fade": [],
+    "never": [],
+    "mock_exposure_limit": 0,
+}
+PREFERENCE_PATH = Path(".cache/player_preferences.json")
+
+
+def _configure_session(session: DraftSession) -> None:
+    session.engine.simulation_samples = SIMULATION_SAMPLES
+    session.engine.set_preferences(
+        list(PLAYER_PREFERENCES["prefer"]),
+        list(PLAYER_PREFERENCES["fade"]),
+        list(PLAYER_PREFERENCES["never"]),
+    )
+
+
+def validate_preferences(values: dict[str, Any]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("prefer", "fade", "never"):
+        names = values.get(key, [])
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise ValueError(f"{key} must be a list of player names")
+        cleaned = list(dict.fromkeys(name.strip() for name in names if name.strip()))
+        if len(cleaned) > 50 or any(len(name) > 80 for name in cleaned):
+            raise ValueError(f"{key} contains too many or overly long player names")
+        result[key] = cleaned
+    exposure = int(values.get("mock_exposure_limit", 0))
+    if not 0 <= exposure <= 100:
+        raise ValueError("mock_exposure_limit must be between 0 and 100")
+    result["mock_exposure_limit"] = exposure
+    return result
+
+
+def _save_preferences() -> None:
+    PREFERENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PREFERENCE_PATH.write_text(json.dumps(PLAYER_PREFERENCES, indent=2), encoding="utf-8")
+
+
+def _load_preferences() -> dict[str, object] | None:
+    if not PREFERENCE_PATH.exists() or PREFERENCE_PATH.stat().st_size > 32_000:
+        return None
+    try:
+        payload = json.loads(PREFERENCE_PATH.read_text(encoding="utf-8"))
+        return validate_preferences(payload)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def _state_payload() -> dict[str, object]:
@@ -37,6 +86,7 @@ def _state_payload() -> dict[str, object]:
         "simulation_samples": SESSION.engine.simulation_samples,
     }
     payload["data_source"] = DATA_SOURCE
+    payload["preferences"] = PLAYER_PREFERENCES
     payload["espn"] = ESPN_BRIDGE.state
     return payload
 
@@ -91,13 +141,20 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        global DATA_SOURCE, OVERRIDE_SECONDS, SESSION, SIGNAL_RECORDS, SIMULATION_SAMPLES
+        global DATA_SOURCE, OVERRIDE_SECONDS, PLAYER_PREFERENCES, SESSION, SIGNAL_RECORDS, SIMULATION_SAMPLES
         try:
             body = self._body()
             if self.path == "/api/pick":
                 SESSION.make_user_pick(str(body["player_id"]), str(body.get("source", "manual")))
             elif self.path == "/api/weights":
                 SESSION.engine.weights.update(body)
+            elif self.path == "/api/preferences":
+                PLAYER_PREFERENCES = validate_preferences(body)
+                _save_preferences()
+                _configure_session(SESSION)
+                ESPN_BRIDGE.configure_mock_exposure(
+                    int(PLAYER_PREFERENCES["mock_exposure_limit"])
+                )
             elif self.path == "/api/settings":
                 slot, OVERRIDE_SECONDS, SIMULATION_SAMPLES = validate_settings(
                     body,
@@ -110,14 +167,14 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     SESSION = DraftSession(
                         demo_players(), replace(SESSION.config, user_slot=slot)
                     )
-                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
+                _configure_session(SESSION)
             elif self.path == "/api/data/nflverse":
                 season = int(body.get("season", date.today().year - 1))
                 if not 1999 <= season <= date.today().year:
                     raise ValueError("season is outside the available nflverse range")
                 result = NflverseProvider().load(season, bool(body.get("refresh", False)))
                 SESSION = DraftSession(result.players, SESSION.config)
-                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
+                _configure_session(SESSION)
                 DATA_SOURCE = {
                     "name": result.source,
                     "season": result.season,
@@ -131,7 +188,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 SIGNAL_RECORDS = result.records
                 enriched, matched = apply_signals(list(SESSION.players.values()), result.records)
                 SESSION = DraftSession(enriched, SESSION.config)
-                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
+                _configure_session(SESSION)
                 DATA_SOURCE = {
                     **DATA_SOURCE,
                     "signals": result.sources,
@@ -150,7 +207,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/api/reset":
                 SESSION = DraftSession(demo_players(), SESSION.config)
-                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
+                _configure_session(SESSION)
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
@@ -163,6 +220,14 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global PLAYER_PREFERENCES
+    saved_preferences = _load_preferences()
+    if saved_preferences is not None:
+        PLAYER_PREFERENCES = saved_preferences
+    _configure_session(SESSION)
+    ESPN_BRIDGE.configure_mock_exposure(
+        int(PLAYER_PREFERENCES["mock_exposure_limit"])
+    )
     address = ("127.0.0.1", 8765)
     print(f"Draft Agent running at http://{address[0]}:{address[1]}")
     ThreadingHTTPServer(address, DraftRequestHandler).serve_forever()

@@ -20,12 +20,36 @@ class EspnDraftBridge:
     """
 
     def __init__(self) -> None:
+        self.mock_rosters: dict[str, set[str]] = {}
+        self.exposure_limit = 0.0
         self.state: dict[str, object] = {
             "connected": False,
             "mode": "shadow",
             "can_submit": False,
             "message": "Waiting for an ESPN mock-draft snapshot.",
         }
+
+    def configure_mock_exposure(self, percent: int) -> None:
+        if not 0 <= percent <= 100:
+            raise ValueError("mock exposure limit must be between 0 and 100")
+        self.exposure_limit = percent / 100
+
+    def _exposure_rates(self, current_draft_id: str) -> tuple[dict[str, float], int]:
+        history = [
+            roster
+            for draft_id, roster in self.mock_rosters.items()
+            if draft_id != current_draft_id and roster
+        ]
+        if not history:
+            return {}, 0
+        player_ids = set().union(*history)
+        return (
+            {
+                player_id: sum(player_id in roster for roster in history) / len(history)
+                for player_id in player_ids
+            },
+            len(history),
+        )
 
     @staticmethod
     def _ids(payload: dict[str, Any], key: str) -> list[str]:
@@ -139,6 +163,9 @@ class EspnDraftBridge:
             raise ValueError("overall_pick is outside the configured draft")
         if not isinstance(payload.get("on_clock"), bool):
             raise ValueError("on_clock must be true or false")
+        is_mock = payload.get("is_mock", False)
+        if not isinstance(is_mock, bool):
+            raise ValueError("is_mock must be true or false")
         user_slot = payload.get("user_slot", config.user_slot)
         if user_slot is None:
             user_slot = config.user_slot
@@ -152,6 +179,11 @@ class EspnDraftBridge:
             raise ValueError("available_player_ids cannot be empty")
         if set(available_ids) & set(roster_ids):
             raise ValueError("a player cannot be both available and on the roster")
+        exposure_rates: dict[str, float] = {}
+        mock_history_count = 0
+        if is_mock:
+            self.mock_rosters[draft_id] = set(roster_ids)
+            exposure_rates, mock_history_count = self._exposure_rates(draft_id)
 
         merged_players, enrichment_rate, signal_rate = self._catalog(payload, players)
         if signal_records:
@@ -182,6 +214,8 @@ class EspnDraftBridge:
             decision_pick,
             self._next_user_pick(decision_pick, snapshot_config),
             5,
+            exposure_rates=exposure_rates,
+            exposure_limit=self.exposure_limit if is_mock else 0.0,
         ) if decision_pick <= snapshot_config.teams * snapshot_config.roster_size else []
         self.state = {
             "connected": True,
@@ -193,6 +227,9 @@ class EspnDraftBridge:
             "decision_pick": decision_pick,
             "user_slot": user_slot,
             "on_clock": payload["on_clock"],
+            "is_mock": is_mock,
+            "mock_history_count": mock_history_count,
+            "mock_exposure_limit": round(self.exposure_limit, 2),
             "match_rate": round(mapping_rate, 3),
             "catalog_size": len(merged_players),
             "historical_enrichment_rate": round(enrichment_rate, 3),

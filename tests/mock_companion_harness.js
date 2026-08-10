@@ -75,6 +75,9 @@ intervals.at(-1)();
 if (snapshots.at(-1)?.overall_pick !== 10) {
   throw new Error("The observer reused a stale React store after ESPN advanced the draft");
 }
+if (snapshots.at(-1)?.is_mock !== false) {
+  throw new Error("The observer did not expose mock status in its snapshot");
+}
 const restartedDraft = { ...draft, leagueId: "NEW-MOCK", pickIndex: 0 };
 currentLink = {
   __reactFiberForTest: { memoizedProps: { store: { draft: restartedDraft, playerPool: [player] } } }
@@ -109,6 +112,10 @@ if (selectedId !== null || results.at(-1)?.ok !== false) {
 }
 
 draft.isMockLeague = true;
+intervals.at(-1)();
+if (snapshots.at(-1)?.is_mock !== true) {
+  throw new Error("The observer did not refresh mock status");
+}
 command({ overall_pick: 7 });
 if (selectedId !== null || !results.at(-1)?.message.includes("stale")) {
   throw new Error("A stale mock pick was not blocked");

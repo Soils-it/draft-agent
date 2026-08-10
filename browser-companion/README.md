@@ -7,7 +7,7 @@ the league as a mock draft.
 
 The observer runs in ESPN's page context because player IDs are not present in
 normal DOM attributes. It locates the React draft store from a rendered player,
-then copies only the mock league ID, draft slot, current pick, on-clock status,
+then copies only the league ID, mock-status flag, draft slot, current pick, on-clock status,
 available and roster ESPN IDs, and the public draft-board fields needed by the
 ranking engine: player name, NFL team, position, editorial rank, and projected
 fantasy points. It never copies ESPN security tokens, member identifiers,
@@ -19,6 +19,10 @@ avoids flooding the recommendation engine with hundreds of undrafted free
 agents while retaining more than a full 12-team, 16-round draft pool. The local
 agent precomputes five choices for the next user pick even when the user is not
 currently on the clock.
+
+Version 0.7 sends the store's boolean mock-status flag so optional player
+exposure limits can apply to practice drafts without affecting real-draft
+recommendations.
 
 ## Development installation
 

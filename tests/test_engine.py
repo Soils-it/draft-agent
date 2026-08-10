@@ -5,7 +5,7 @@ from draft_agent.data import demo_players
 from draft_agent.engine import DraftEngine
 from draft_agent.models import Player
 from draft_agent.session import DraftSession
-from draft_agent.server import validate_settings
+from draft_agent.server import validate_preferences, validate_settings
 
 
 class EngineTests(unittest.TestCase):
@@ -221,7 +221,7 @@ class EngineTests(unittest.TestCase):
         ranked = engine.rank(candidates, roster, 30, 43)
         self.assertEqual(ranked[0]["id"], "fallen-qb")
 
-    def test_first_four_core_picks_target_two_rbs_and_two_wrs(self):
+    def test_core_targets_two_rbs_and_two_wrs_by_round_six(self):
         engine = DraftEngine(self.config, simulation_samples=50)
         first_two_wrs = [
             Player("wr1", "WR One", "AAA", "WR", 5),
@@ -235,24 +235,171 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in third_pick], ["rb1"])
 
         fourth_pick_roster = first_two_wrs + [candidates[1]]
-        fourth_pick = engine.rank(
+        fourth_pick_ids = {
+            item["id"]
+            for item in engine.rank(
+                [
+                    candidates[0],
+                    Player(
+                        "rb2",
+                        "RB Two",
+                        "EEE",
+                        "RB",
+                        50,
+                        projected_points_override=180,
+                    ),
+                ],
+                fourth_pick_roster,
+                43,
+                54,
+            )
+        }
+        self.assertEqual(fourth_pick_ids, {"te", "rb2"})
+
+        sixth_pick = engine.rank(
             [
                 candidates[0],
-                Player("rb2", "RB Two", "EEE", "RB", 50, projected_points_override=180),
+                Player("rb2", "RB Two", "EEE", "RB", 70, projected_points_override=180),
             ],
             fourth_pick_roster,
-            43,
-            54,
+            67,
+            78,
         )
-        self.assertEqual([item["id"] for item in fourth_pick], ["rb2"])
+        self.assertEqual([item["id"] for item in sixth_pick], ["rb2"])
 
-        completed_core = fourth_pick_roster + [
-            Player("rb2", "RB Two", "EEE", "RB", 50, projected_points_override=180)
+    def test_core_deadline_does_not_force_more_than_ten_pick_reach(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        roster = [
+            Player("wr1", "WR One", "AAA", "WR", 5),
+            Player("wr2", "WR Two", "BBB", "WR", 15),
+            Player("rb1", "RB One", "CCC", "RB", 30),
         ]
-        fifth_pick_ids = {
-            item["id"] for item in engine.rank([candidates[0]], completed_core, 54, 67)
-        }
-        self.assertEqual(fifth_pick_ids, {"te"})
+        candidates = [
+            Player(
+                "reach-rb",
+                "Reach RB",
+                "DDD",
+                "RB",
+                80,
+                projected_points_override=240,
+                signals={"consensus_rank": 80},
+            ),
+            Player(
+                "value-wr",
+                "Value WR",
+                "EEE",
+                "WR",
+                67,
+                projected_points_override=220,
+                signals={"consensus_rank": 67},
+            ),
+        ]
+        ranked = engine.rank(candidates, roster, 67, 78)
+        self.assertEqual([item["id"] for item in ranked], ["value-wr"])
+
+    def test_lamar_market_quality_beats_higher_projected_maye(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        roster = [
+            Player("rb1", "RB One", "AAA", "RB", 10),
+            Player("rb2", "RB Two", "BBB", "RB", 20),
+            Player("wr1", "WR One", "CCC", "WR", 12),
+            Player("wr2", "WR Two", "DDD", "WR", 22),
+        ]
+        quarterbacks = [
+            Player(
+                "lamar",
+                "Lamar Jackson",
+                "BAL",
+                "QB",
+                32,
+                projected_points_override=390,
+                signals={"consensus_rank": 32},
+            ),
+            Player(
+                "maye",
+                "Drake Maye",
+                "NE",
+                "QB",
+                38,
+                projected_points_override=420,
+                signals={"consensus_rank": 38},
+            ),
+        ]
+        ranked = engine.rank(quarterbacks, roster, 58, 63)
+        self.assertEqual(ranked[0]["id"], "lamar")
+        self.assertGreater(
+            ranked[0]["components"]["market_quality"],
+            ranked[1]["components"]["market_quality"],
+        )
+
+    def test_round_two_rb_anchor_rewards_reasonably_priced_rb(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        roster = [Player("wr1", "WR One", "AAA", "WR", 5)]
+        players = [
+            Player(
+                "rb",
+                "Anchor RB",
+                "BBB",
+                "RB",
+                20,
+                projected_points_override=240,
+                signals={"consensus_rank": 20},
+            ),
+            Player(
+                "wr",
+                "Another WR",
+                "CCC",
+                "WR",
+                15,
+                projected_points_override=250,
+                signals={"consensus_rank": 15},
+            ),
+        ]
+        ranked = engine.rank(players, roster, 15, 34)
+        self.assertEqual(ranked[0]["id"], "rb")
+        self.assertGreater(ranked[0]["components"]["rb_anchor"], 0)
+
+    def test_preferences_and_mock_exposure_change_eligible_players(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        players = [
+            Player(
+                "one",
+                "Player One",
+                "AAA",
+                "WR",
+                5,
+                projected_points_override=250,
+                external_ids={"espn": "1"},
+                signals={"consensus_rank": 5},
+            ),
+            Player(
+                "two",
+                "Player Two",
+                "BBB",
+                "WR",
+                6,
+                projected_points_override=245,
+                external_ids={"espn": "2"},
+                signals={"consensus_rank": 6},
+            ),
+        ]
+        engine.set_preferences(fade=["Player One"], prefer=["Player Two"])
+        self.assertEqual(engine.rank(players, [], 6, 19, 1)[0]["id"], "two")
+        engine.set_preferences(never=["Player One"])
+        self.assertEqual(
+            {item["id"] for item in engine.rank(players, [], 6, 19)},
+            {"two"},
+        )
+        engine.set_preferences()
+        exposure_ranked = engine.rank(
+            players,
+            [],
+            6,
+            19,
+            exposure_rates={"1": 1.0, "2": 0.0},
+            exposure_limit=0.5,
+        )
+        self.assertEqual([item["id"] for item in exposure_ranked], ["two"])
 
     def test_third_early_wr_is_blocked_before_first_rb(self):
         engine = DraftEngine(self.config, simulation_samples=50)
@@ -461,6 +608,28 @@ class EngineTests(unittest.TestCase):
             validate_settings({"override_seconds": 3}, 6, 20, 12)
         with self.assertRaises(ValueError):
             validate_settings({"simulation_samples": 20}, 6, 20, 12)
+
+    def test_player_preference_validation(self):
+        self.assertEqual(
+            validate_preferences(
+                {
+                    "prefer": ["Lamar Jackson", "Lamar Jackson"],
+                    "fade": ["Drake Maye"],
+                    "never": ["Example Player"],
+                    "mock_exposure_limit": 50,
+                }
+            ),
+            {
+                "prefer": ["Lamar Jackson"],
+                "fade": ["Drake Maye"],
+                "never": ["Example Player"],
+                "mock_exposure_limit": 50,
+            },
+        )
+        with self.assertRaises(ValueError):
+            validate_preferences({"prefer": "not-a-list"})
+        with self.assertRaises(ValueError):
+            validate_preferences({"mock_exposure_limit": 101})
 
     def test_simulation_is_deterministic_and_exposed(self):
         engine = DraftEngine(self.config, simulation_samples=50)

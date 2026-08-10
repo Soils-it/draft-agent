@@ -89,6 +89,7 @@
       draft_id: leagueId,
       overall_pick: draft.pickIndex + 1,
       on_clock: currentTeamId === userTeamId,
+      is_mock: draft.isMockLeague === true,
       user_slot: Number.isInteger(draftOrder) ? draftOrder + 1 : null,
       player_catalog: rankedPool.map((player) => ({
         id: String(player.id),

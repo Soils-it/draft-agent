@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import re
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 
@@ -13,7 +15,9 @@ from .simulation import simulate_turn_value
 @dataclass
 class StrategyWeights:
     projection: float = 0.12
-    consensus: float = 0.24
+    consensus: float = 0.18
+    market_quality: float = 0.22
+    market_dominance: float = 0.35
     reach_penalty: float = 0.22
     vor: float = 0.12
     scarcity: float = 0.06
@@ -21,11 +25,14 @@ class StrategyWeights:
     te_urgency: float = 0.08
     roster_need: float = 0.16
     position_value: float = 0.16
+    rb_anchor: float = 0.30
     gone_next_pick: float = 0.06
     availability: float = 0.10
     bye_fit: float = 0.01
     trend: float = 0.02
     rookie_camp_role: float = 0.03
+    preference: float = 0.25
+    exposure_penalty: float = 0.18
     upside: float = 0.04
     risk: float = 0.12
     simulation: float = 0.05
@@ -53,6 +60,24 @@ class DraftEngine:
         self.config = config
         self.weights = weights or StrategyWeights()
         self.simulation_samples = simulation_samples
+        self.prefer_names: set[str] = set()
+        self.fade_names: set[str] = set()
+        self.never_names: set[str] = set()
+
+    @staticmethod
+    def _name_key(value: str) -> str:
+        plain = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+        return " ".join(re.sub(r"[^a-z0-9 ]", " ", plain.lower()).split())
+
+    def set_preferences(
+        self,
+        prefer: list[str] | None = None,
+        fade: list[str] | None = None,
+        never: list[str] | None = None,
+    ) -> None:
+        self.prefer_names = {self._name_key(value) for value in prefer or [] if value.strip()}
+        self.fade_names = {self._name_key(value) for value in fade or [] if value.strip()}
+        self.never_names = {self._name_key(value) for value in never or [] if value.strip()}
 
     @staticmethod
     def _normalize(values: dict[str, float]) -> dict[str, float]:
@@ -69,8 +94,10 @@ class DraftEngine:
 
     @staticmethod
     def _market_reach_limit(round_number: int) -> int:
-        if round_number <= 4:
+        if round_number == 1:
             return 6
+        if round_number <= 4:
+            return 10
         if round_number <= 8:
             return 12
         if round_number <= 12:
@@ -94,6 +121,55 @@ class DraftEngine:
     def _reach_penalty(player: Player, current_pick: int, reach_limit: int) -> float:
         reach = max(0.0, DraftEngine._market_rank(player) - current_pick)
         return min(1.0, reach / reach_limit)
+
+    @staticmethod
+    def _market_quality(player: Player, best_market_rank: float) -> float:
+        rank_gap = max(0.0, DraftEngine._market_rank(player) - best_market_rank)
+        return math.exp(-rank_gap / 12)
+
+    def _preference(self, player: Player) -> float:
+        key = self._name_key(player.name)
+        if key in self.prefer_names:
+            return 1.0
+        if key in self.fade_names:
+            return -1.0
+        return 0.0
+
+    def _rb_anchor(
+        self,
+        player: Player,
+        roster: list[Player],
+        round_number: int,
+        current_pick: int,
+    ) -> float:
+        counts = Counter(item.position for item in roster)
+        if (
+            round_number != 2
+            or player.position != "RB"
+            or counts["RB"] > 0
+            or counts["WR"] == 0
+        ):
+            return 0.0
+        reach = max(0.0, self._market_rank(player) - current_pick)
+        if reach > 10:
+            return 0.0
+        return 1.0 - reach / 20
+
+    def _market_dominated(self, player: Player, pool: list[Player]) -> bool:
+        """Reject a lower-market peer unless its projection is materially better."""
+        if self._preference(player) > 0:
+            return False
+        player_rank = self._market_rank(player)
+        player_points = projected_points(player)
+        return any(
+            peer.position == player.position
+            and self._market_rank(peer) <= player_rank - 5
+            and projected_points(peer) >= player_points * 0.9
+            and self._availability(peer) >= self._availability(player)
+            and self._preference(peer) >= 0
+            for peer in pool
+            if peer.player_id != player.player_id
+        )
 
     def _roster_need(
         self,
@@ -133,10 +209,7 @@ class DraftEngine:
         if position == "TE":
             if counts[position] and round_number < 13:
                 return -1.0
-            # Build the four-player RB/WR foundation before spending an early
-            # pick at a one-starter position. A normal draft completes this in
-            # round 4; an exceptional early QB can delay it to round 5.
-            if counts[position] == 0 and (counts["RB"] < 2 or counts["WR"] < 2):
+            if counts[position] == 0 and round_number < 4:
                 return -1.0
         if position in {"K", "DST"}:
             return 1.25 if round_number >= 15 and counts[position] == 0 else -1.0
@@ -159,9 +232,9 @@ class DraftEngine:
             required.add("RB")
         if round_number >= 3 and counts["WR"] < 1:
             required.add("WR")
-        if round_number >= 4 and counts["RB"] < 2:
+        if round_number >= 6 and counts["RB"] < 2:
             required.add("RB")
-        if round_number >= 4 and counts["WR"] < 2:
+        if round_number >= 6 and counts["WR"] < 2:
             required.add("WR")
         if round_number >= 8 and counts["RB"] >= counts["WR"] + 2 and counts["WR"] < 5:
             required.add("WR")
@@ -169,7 +242,7 @@ class DraftEngine:
             required.add("RB")
         if round_number >= 10 and counts["QB"] < 1:
             required.add("QB")
-        if round_number >= 10 and counts["TE"] < 1:
+        if round_number >= 13 and counts["TE"] < 1:
             required.add("TE")
         if round_number >= 15:
             required.update(position for position in ("K", "DST") if counts[position] < 1)
@@ -206,9 +279,9 @@ class DraftEngine:
     ) -> float:
         if player.position != "TE" or any(item.position == "TE" for item in roster):
             return 0.0
-        if round_number not in {8, 9, 10}:
+        if round_number not in {8, 9, 10, 11, 12}:
             return 0.0
-        stage = {8: 0.55, 9: 0.78, 10: 1.0}[round_number]
+        stage = {8: 0.4, 9: 0.55, 10: 0.7, 11: 0.85, 12: 1.0}[round_number]
         # Escalate as the deadline approaches, with extra weight for the last
         # player before a meaningful projected tier drop.
         return stage * (0.65 + 0.35 * tier_drop)
@@ -272,20 +345,51 @@ class DraftEngine:
         current_pick: int,
         next_pick: int,
         limit: int = 10,
+        exposure_rates: dict[str, float] | None = None,
+        exposure_limit: float = 0.0,
     ) -> list[dict[str, object]]:
         round_number = (current_pick - 1) // self.config.teams + 1
         required_positions = self._required_positions(roster, round_number)
-        eligible = [
+        base_eligible = [
             player
             for player in available
             if self._roster_need(player, roster, round_number, current_pick) >= 0
-            and (not required_positions or player.position in required_positions)
+            and self._name_key(player.name) not in self.never_names
         ]
-        # Use consensus/ADP as a guardrail rather than letting a noisy model
-        # component reach multiple rounds. If a forced roster requirement has
-        # no player inside the band, retain the original pool so the draft can
-        # still complete a legal lineup.
+        exposure_rates = exposure_rates or {}
+        if exposure_limit > 0:
+            under_limit = [
+                player
+                for player in base_eligible
+                if exposure_rates.get(player.external_ids.get("espn", ""), 0.0)
+                < exposure_limit
+            ]
+            if under_limit:
+                base_eligible = under_limit
+
         reach_limit = self._market_reach_limit(round_number)
+        eligible = base_eligible
+        if required_positions:
+            required_pool = [
+                player for player in base_eligible if player.position in required_positions
+            ]
+            required_limit = (
+                min(reach_limit, 10)
+                if required_positions.issubset({"RB", "WR"})
+                else reach_limit
+            )
+            required_in_range = [
+                player
+                for player in required_pool
+                if self._market_rank(player) - current_pick <= required_limit
+            ]
+            if required_in_range:
+                eligible = required_in_range
+            elif round_number >= 13:
+                eligible = required_pool
+        # Use consensus/ADP as a guardrail rather than letting a noisy model
+        # component reach multiple rounds. Early RB/WR targets are soft when
+        # every candidate would exceed a ten-pick reach.
         market_eligible = [
             player
             for player in eligible
@@ -308,8 +412,17 @@ class DraftEngine:
 
         projection_relative: dict[str, float] = {}
         for group in by_position.values():
-            normalized = self._normalize({player.player_id: points[player.player_id] for player in group})
-            projection_relative.update(normalized)
+            position_high = max(points[player.player_id] for player in group)
+            projection_relative.update(
+                {
+                    player.player_id: (
+                        points[player.player_id] / position_high
+                        if position_high > 0
+                        else 0.5
+                    )
+                    for player in group
+                }
+            )
 
         vor_raw: dict[str, float] = {}
         scarcity_raw: dict[str, float] = {}
@@ -331,6 +444,14 @@ class DraftEngine:
             )
             for player in eligible
         }
+        best_market_rank = min(
+            (self._market_rank(player) for player in eligible),
+            default=float(current_pick),
+        )
+        market_quality = {
+            player.player_id: self._market_quality(player, best_market_rank)
+            for player in eligible
+        }
         trend_raw = {
             player.player_id: math.copysign(
                 math.log1p(abs(player.signals.get("trend_adds_24h", 0) - player.signals.get("trend_drops_24h", 0))),
@@ -344,6 +465,7 @@ class DraftEngine:
             # This measures projection quality within each player's position.
             "projection": projection_relative,
             "consensus": consensus_score,
+            "market_quality": market_quality,
             "vor": self._normalize(vor_raw),
             "scarcity": self._normalize(scarcity_raw),
             "tier_drop": self._normalize(tier_raw),
@@ -354,12 +476,16 @@ class DraftEngine:
         for player in eligible:
             # Logistic approximation: earlier ADP and a longer wait increase the chance gone.
             market_rank = self._market_rank(player)
+            market_dominance = 1.0 if self._market_dominated(player, eligible) else 0.0
             reach_penalty = self._reach_penalty(player, current_pick, reach_limit)
+            exposure = exposure_rates.get(player.external_ids.get("espn", ""), 0.0)
             blended_rank = market_rank * 0.7 + player.adp * 0.3
             uncertainty = min(player.signals.get("consensus_sd", 8.0) / 30, 1.0)
             gone = 1 / (1 + math.exp((blended_rank - (current_pick + picks_away * 0.55)) / (6.5 + 4 * uncertainty)))
             roster_need = self._roster_need(player, roster, round_number, current_pick)
             position_value = self._position_value(player, roster, round_number)
+            rb_anchor = self._rb_anchor(player, roster, round_number, current_pick)
+            preference = self._preference(player)
             te_urgency = self._te_urgency(
                 player,
                 roster,
@@ -373,6 +499,8 @@ class DraftEngine:
             score = (
                 self.weights.projection * components["projection"][player.player_id]
                 + self.weights.consensus * components["consensus"][player.player_id]
+                + self.weights.market_quality * components["market_quality"][player.player_id]
+                - self.weights.market_dominance * market_dominance
                 - self.weights.reach_penalty * reach_penalty
                 + self.weights.vor * components["vor"][player.player_id]
                 + self.weights.scarcity * components["scarcity"][player.player_id]
@@ -380,17 +508,22 @@ class DraftEngine:
                 + self.weights.te_urgency * te_urgency
                 + self.weights.roster_need * roster_need
                 + self.weights.position_value * position_value
+                + self.weights.rb_anchor * rb_anchor
                 + self.weights.gone_next_pick * gone
                 + self.weights.availability * availability
                 + self.weights.bye_fit * bye_fit
                 + self.weights.trend * components["trend"][player.player_id]
                 + self.weights.rookie_camp_role * rookie_camp_role
+                + self.weights.preference * preference
+                - self.weights.exposure_penalty * exposure
                 + self.weights.upside * player.upside
                 - self.weights.risk * effective_risk
             )
             detail = {
                 "projection": components["projection"][player.player_id],
                 "consensus": components["consensus"][player.player_id],
+                "market_quality": components["market_quality"][player.player_id],
+                "market_dominance": market_dominance,
                 "reach_penalty": reach_penalty,
                 "vor": components["vor"][player.player_id],
                 "scarcity": components["scarcity"][player.player_id],
@@ -398,11 +531,14 @@ class DraftEngine:
                 "te_urgency": te_urgency,
                 "roster_need": roster_need,
                 "position_value": position_value,
+                "rb_anchor": rb_anchor,
                 "gone_next_pick": gone,
                 "availability": availability,
                 "bye_fit": bye_fit,
                 "trend": components["trend"][player.player_id],
                 "rookie_camp_role": rookie_camp_role,
+                "preference": preference,
+                "exposure_penalty": exposure,
                 "upside": player.upside,
                 "risk": effective_risk,
             }
