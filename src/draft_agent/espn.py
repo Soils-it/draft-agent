@@ -8,6 +8,7 @@ from typing import Any
 from .config import LeagueConfig
 from .engine import DraftEngine
 from .models import Player
+from .scoring import projected_points
 
 
 class EspnDraftBridge:
@@ -187,6 +188,10 @@ class EspnDraftBridge:
             "catalog_size": len(merged_players),
             "historical_enrichment_rate": round(enrichment_rate, 3),
             "mapped_roster": len(mapped_roster),
+            "roster": [
+                {**player.as_dict(), "projected_points": projected_points(player)}
+                for player in mapped_roster
+            ],
             "recommendations": recommendations,
             "prequeue_espn_player_ids": [item["espn_id"] for item in recommendations],
             "pending_espn_player_id": (

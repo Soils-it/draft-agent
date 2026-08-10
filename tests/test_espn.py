@@ -47,6 +47,7 @@ class EspnBridgeTests(unittest.TestCase):
         self.assertEqual(state["match_rate"], 1)
         self.assertEqual(state["catalog_size"], 200)
         self.assertEqual(state["historical_enrichment_rate"], 1)
+        self.assertEqual(state["roster"], [])
         self.assertEqual(len(state["recommendations"]), 5)
         self.assertIsNotNone(state["pending_espn_player_id"])
         self.assertTrue(state["mock_command_ready"])
@@ -107,6 +108,15 @@ class EspnBridgeTests(unittest.TestCase):
         payload["player_catalog"].append(dict(payload["player_catalog"][0]))
         with self.assertRaisesRegex(ValueError, "duplicate"):
             self.bridge.ingest(payload, self.players, self.engine, self.config)
+
+    def test_live_roster_uses_current_espn_catalog(self):
+        payload = self.payload()
+        roster_id = payload["available_player_ids"].pop(0)
+        payload["roster_player_ids"] = [roster_id]
+        state = self.bridge.ingest(payload, self.players, self.engine, self.config)
+        self.assertEqual(state["mapped_roster"], 1)
+        self.assertEqual(state["roster"][0]["espn_id"], roster_id)
+        self.assertIn("projected_points", state["roster"][0])
 
 
 if __name__ == "__main__":
