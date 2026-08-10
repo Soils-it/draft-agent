@@ -17,6 +17,8 @@ class Player:
     status: str = "ACTIVE"
     external_ids: dict[str, str] = field(default_factory=dict)
     projected_points_override: float | None = None
+    signals: dict[str, float] = field(default_factory=dict)
+    context: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -29,6 +31,8 @@ class Player:
             "risk": round(self.risk, 3),
             "status": self.status,
             "espn_id": self.external_ids.get("espn"),
+            "signals": self.signals,
+            "context": self.context,
         }
 
 

@@ -11,6 +11,7 @@ from typing import Any
 from .data import demo_players
 from .espn import EspnDraftBridge
 from .providers import NflverseProvider
+from .signals import FreeSignalProvider, apply_signals
 from .session import DraftSession
 
 
@@ -112,6 +113,18 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     "fetched_at": result.fetched_at,
                     "warning": "Historical baseline only; not a current expert projection.",
                     "mapped_espn_ids": result.mapped_espn_ids,
+                }
+            elif self.path == "/api/data/signals":
+                result = FreeSignalProvider().load(bool(body.get("refresh", False)))
+                enriched, matched = apply_signals(list(SESSION.players.values()), result.records)
+                SESSION = DraftSession(enriched, SESSION.config)
+                DATA_SOURCE = {
+                    **DATA_SOURCE,
+                    "signals": result.sources,
+                    "signals_cached": result.cached,
+                    "signals_fetched_at": result.fetched_at,
+                    "signals_matched": matched,
+                    "signals_available": len(result.records),
                 }
             elif self.path == "/api/espn/snapshot":
                 ESPN_BRIDGE.ingest(
