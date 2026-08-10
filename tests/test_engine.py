@@ -3,6 +3,7 @@ import unittest
 from draft_agent.config import LeagueConfig
 from draft_agent.data import demo_players
 from draft_agent.engine import DraftEngine
+from draft_agent.models import Player
 from draft_agent.session import DraftSession
 from draft_agent.server import validate_settings
 
@@ -40,6 +41,25 @@ class EngineTests(unittest.TestCase):
         second = engine.rank(self.players, [], 6, 19, 1)[0]
         self.assertNotEqual(first["draft_score"], second["draft_score"])
         self.assertEqual(second["components"]["upside"], 0.87)
+
+    def test_consensus_can_break_equal_projection_tie(self):
+        players = [
+            Player("late", "Late Market", "AAA", "WR", 20, projected_points_override=200, signals={"consensus_rank": 40}),
+            Player("early", "Early Market", "BBB", "WR", 20, projected_points_override=200, signals={"consensus_rank": 5}),
+        ]
+        engine = DraftEngine(self.config)
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"consensus": 1})
+        self.assertEqual(engine.rank(players, [], 6, 19, 1)[0]["id"], "early")
+
+    def test_injury_and_bye_overlap_reduce_components(self):
+        healthy = Player("healthy", "Healthy", "AAA", "WR", 10, projected_points_override=200, signals={"bye_week": 8})
+        hurt = Player("hurt", "Hurt", "BBB", "WR", 10, projected_points_override=200, signals={"bye_week": 7}, context={"injury_status": "Out"})
+        roster = [Player("roster", "Roster", "CCC", "WR", 1, signals={"bye_week": 8})]
+        ranked = {item["id"]: item for item in DraftEngine(self.config).rank([healthy, hurt], roster, 20, 30)}
+        self.assertEqual(ranked["hurt"]["components"]["availability"], 0.12)
+        self.assertEqual(ranked["healthy"]["components"]["bye_fit"], 0.5)
+        self.assertGreater(ranked["healthy"]["components"]["availability"], ranked["hurt"]["components"]["availability"])
 
     def test_full_mock_draft_builds_legal_roster(self):
         session = DraftSession(self.players, self.config)
