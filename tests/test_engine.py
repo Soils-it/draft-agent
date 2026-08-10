@@ -76,6 +76,10 @@ class EngineTests(unittest.TestCase):
         engine = DraftEngine(self.config, simulation_samples=50)
         engine.weights.update({key: 0 for key in engine.weights.__dict__})
         engine.weights.update({"consensus": 1})
+        roster = [
+            Player("roster-rb", "Roster RB", "CCC", "RB", 10),
+            Player("roster-wr", "Roster WR", "DDD", "WR", 12),
+        ]
         candidates = [
             Player(
                 "fallen-qb",
@@ -96,8 +100,41 @@ class EngineTests(unittest.TestCase):
                 signals={"consensus_rank": 25},
             ),
         ]
-        ranked = engine.rank(candidates, [], 30, 43)
+        ranked = engine.rank(candidates, roster, 30, 43)
         self.assertEqual(ranked[0]["id"], "fallen-qb")
+
+    def test_first_four_core_picks_target_two_rbs_and_two_wrs(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        first_two_wrs = [
+            Player("wr1", "WR One", "AAA", "WR", 5),
+            Player("wr2", "WR Two", "BBB", "WR", 15),
+        ]
+        candidates = [
+            Player("te", "Early TE", "CCC", "TE", 1, projected_points_override=350),
+            Player("rb1", "RB One", "DDD", "RB", 40, projected_points_override=200),
+        ]
+        third_pick = engine.rank(candidates, first_two_wrs, 30, 43)
+        self.assertEqual([item["id"] for item in third_pick], ["rb1"])
+
+        fourth_pick_roster = first_two_wrs + [candidates[1]]
+        fourth_pick = engine.rank(
+            [
+                candidates[0],
+                Player("rb2", "RB Two", "EEE", "RB", 50, projected_points_override=180),
+            ],
+            fourth_pick_roster,
+            43,
+            54,
+        )
+        self.assertEqual([item["id"] for item in fourth_pick], ["rb2"])
+
+        completed_core = fourth_pick_roster + [
+            Player("rb2", "RB Two", "EEE", "RB", 50, projected_points_override=180)
+        ]
+        fifth_pick_ids = {
+            item["id"] for item in engine.rank([candidates[0]], completed_core, 54, 67)
+        }
+        self.assertEqual(fifth_pick_ids, {"te"})
 
     def test_third_early_wr_is_blocked_before_first_rb(self):
         engine = DraftEngine(self.config, simulation_samples=50)

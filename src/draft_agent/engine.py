@@ -109,8 +109,14 @@ class DraftEngine:
             and round_number < 4
         ):
             return -1.0
-        if position == "TE" and counts[position] and round_number < 13:
-            return -1.0
+        if position == "TE":
+            if counts[position] and round_number < 13:
+                return -1.0
+            # Build the four-player RB/WR foundation before spending an early
+            # pick at a one-starter position. A normal draft completes this in
+            # round 4; an exceptional early QB can delay it to round 5.
+            if counts[position] == 0 and (counts["RB"] < 2 or counts["WR"] < 2):
+                return -1.0
         if position in {"K", "DST"}:
             return 1.25 if round_number >= 15 and counts[position] == 0 else -1.0
         required = self.config.starters[position]
@@ -128,13 +134,13 @@ class DraftEngine:
         """Return starter positions that can no longer safely be deferred."""
         counts = Counter(item.position for item in roster)
         required: set[str] = set()
-        if round_number >= 4 and counts["RB"] < 1:
+        if round_number >= 3 and counts["RB"] < 1:
             required.add("RB")
-        if round_number >= 4 and counts["WR"] < 1:
+        if round_number >= 3 and counts["WR"] < 1:
             required.add("WR")
-        if round_number >= 6 and counts["RB"] < 2:
+        if round_number >= 4 and counts["RB"] < 2:
             required.add("RB")
-        if round_number >= 7 and counts["WR"] < 2:
+        if round_number >= 4 and counts["WR"] < 2:
             required.add("WR")
         if round_number >= 8 and counts["RB"] >= counts["WR"] + 2 and counts["WR"] < 5:
             required.add("WR")
