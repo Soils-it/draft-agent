@@ -84,7 +84,7 @@ class DraftSession:
                 Pick(self.current_pick, self.team_for_pick(self.current_pick), player.player_id, "opponent")
             )
 
-    def as_dict(self) -> dict[str, object]:
+    def as_dict(self, include_recommendations: bool = True) -> dict[str, object]:
         roster = self.user_roster()
         latest = self.picks[-12:]
         return {
@@ -98,7 +98,7 @@ class DraftSession:
                 {**player.as_dict(), "projected_points": round(projected_points(player), 1)}
                 for player in roster
             ],
-            "recommendations": self.recommendations(),
+            "recommendations": self.recommendations() if include_recommendations else [],
             "weights": self.engine.weights.__dict__,
             "recent_picks": [
                 {

@@ -27,7 +27,9 @@ ESPN_BRIDGE = EspnDraftBridge()
 
 
 def _state_payload() -> dict[str, object]:
-    payload = SESSION.as_dict()
+    # While ESPN is connected its bridge already owns the live recommendation.
+    # Avoid running a second Monte Carlo draft on every snapshot and dashboard poll.
+    payload = SESSION.as_dict(include_recommendations=not bool(ESPN_BRIDGE.state.get("connected")))
     payload["settings"] = {
         "user_slot": SESSION.config.user_slot,
         "override_seconds": OVERRIDE_SECONDS,

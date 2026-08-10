@@ -2,6 +2,7 @@
 
 const LOCAL_ENDPOINT = "http://127.0.0.1:8765/api/espn/snapshot";
 const activePicks = new Map();
+const snapshotQueues = new Map();
 
 async function saveStatus(status) {
   await chrome.storage.local.set({
@@ -34,6 +35,26 @@ async function handleSnapshot(snapshot, tabId) {
   }
 }
 
+async function queueSnapshot(snapshot, tabId) {
+  const current = snapshotQueues.get(tabId);
+  if (current) {
+    current.pending = snapshot;
+    return;
+  }
+  const queue = { pending: null };
+  snapshotQueues.set(tabId, queue);
+  try {
+    let next = snapshot;
+    while (next) {
+      await handleSnapshot(next, tabId);
+      next = queue.pending;
+      queue.pending = null;
+    }
+  } finally {
+    snapshotQueues.delete(tabId);
+  }
+}
+
 async function considerMockPick(snapshot, result, enabled, tabId) {
   const recommendation = result?.espn?.pending_espn_player_id;
   const pickKey = `${snapshot.league_id}:${snapshot.overall_pick}`;
@@ -62,7 +83,7 @@ async function considerMockPick(snapshot, result, enabled, tabId) {
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message?.type === "DRAFT_AGENT_SNAPSHOT" && sender.tab?.id) {
-    handleSnapshot(message.snapshot, sender.tab.id)
+    queueSnapshot(message.snapshot, sender.tab.id)
       .then(() => respond({ ok: true }))
       .catch((error) => respond({ ok: false, error: String(error?.message || error) }));
     return true;
@@ -77,4 +98,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   return false;
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => activePicks.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  activePicks.delete(tabId);
+  snapshotQueues.delete(tabId);
+});

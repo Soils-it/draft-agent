@@ -25,6 +25,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(session.current_pick, 6)
         self.assertTrue(session.as_dict()["on_clock"])
         self.assertEqual(len(session.recommendations()), 5)
+        self.assertEqual(session.as_dict(include_recommendations=False)["recommendations"], [])
 
     def test_user_pick_is_unique_and_advances_round(self):
         session = DraftSession(self.players, self.config)
