@@ -1,8 +1,9 @@
 (() => {
   "use strict";
 
-  if (window.__ESPN_DRAFT_AGENT_CONTENT_ACTIVE__) return;
-  window.__ESPN_DRAFT_AGENT_CONTENT_ACTIVE__ = true;
+  const generation = Number(window.__ESPN_DRAFT_AGENT_CONTENT_GENERATION__ || 0) + 1;
+  window.__ESPN_DRAFT_AGENT_CONTENT_GENERATION__ = generation;
+  const isCurrent = () => window.__ESPN_DRAFT_AGENT_CONTENT_GENERATION__ === generation;
 
   const LOCAL_ENDPOINT = "http://127.0.0.1:8765/api/espn/snapshot";
   const PAGE_SOURCE = "ESPN_DRAFT_AGENT_PAGE";
@@ -12,15 +13,21 @@
   let pendingPickKey = null;
 
   async function saveStatus(status) {
-    await chrome.storage.local.set({
-      draftAgentLastStatus: { ...status, at: new Date().toISOString() }
-    });
+    if (!isCurrent() || !chrome.runtime?.id) return;
+    try {
+      await chrome.storage.local.set({
+        draftAgentLastStatus: { ...status, at: new Date().toISOString() }
+      });
+    } catch (error) {
+      if (!String(error).includes("Extension context invalidated")) throw error;
+    }
   }
 
   async function sync(snapshot) {
-    const settings = await chrome.storage.local.get({ enabled: false, autoPickMocks: false });
-    if (!settings.enabled) return;
+    if (!isCurrent() || !chrome.runtime?.id) return;
     try {
+      const settings = await chrome.storage.local.get({ enabled: false, autoPickMocks: false });
+      if (!settings.enabled || !isCurrent()) return;
       const response = await fetch(LOCAL_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -38,7 +45,9 @@
         matchRate: result.espn.match_rate
       });
     } catch (error) {
-      await saveStatus({ ok: false, message: String(error.message || error) });
+      if (!String(error).includes("Extension context invalidated")) {
+        await saveStatus({ ok: false, message: String(error.message || error) });
+      }
     }
   }
 
@@ -56,6 +65,7 @@
     pendingPickKey = pickKey;
     const delay = Math.max(5, Number(result?.settings?.override_seconds) || 20) * 1000;
     pendingTimer = setTimeout(() => {
+      if (!isCurrent()) return;
       attemptedPicks.add(pickKey);
       pendingTimer = null;
       pendingPickKey = null;
@@ -73,6 +83,7 @@
   }
 
   window.addEventListener("message", (event) => {
+    if (!isCurrent()) return;
     if (event.source !== window || event.data?.source !== PAGE_SOURCE) return;
     if (event.data.type === "SNAPSHOT") {
       const snapshot = event.data.snapshot;
@@ -82,10 +93,14 @@
     if (event.data.type !== "MOCK_PICK_RESULT") return;
     const result = event.data.result;
     if (!result) return;
-    saveStatus({ ok: result.ok === true, message: String(result.message || "Mock selection finished.") });
+    void saveStatus({
+      ok: result.ok === true,
+      message: String(result.message || "Mock selection finished.")
+    }).catch(() => {});
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+    if (!isCurrent()) return false;
     if (message?.type !== "DRAFT_AGENT_SYNC") return false;
     window.postMessage({ source: CONTENT_SOURCE, type: "REQUEST_SNAPSHOT" }, "*");
     respond({ ok: true });

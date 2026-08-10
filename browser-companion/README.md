@@ -35,6 +35,10 @@ the active ESPN tab. The manifest does not auto-inject scripts, avoiding stale
 or duplicated extension contexts after an unpacked-extension reload. Click the
 button once after entering each new draft room.
 
+Repeated syncs use generation ownership: the newest injected bridge supersedes
+older listeners and timers. This prevents an unpacked-extension reload from
+leaving an invalid Chrome API context active in the ESPN page.
+
 The controller waits for the configured override period. A manual ESPN pick
 during that window makes its command stale and therefore harmless. Immediately
 before sending, it checks mock status, league ID, overall pick, turn ownership,

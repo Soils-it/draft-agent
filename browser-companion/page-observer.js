@@ -1,8 +1,9 @@
 (() => {
   "use strict";
 
-  if (window.__ESPN_DRAFT_AGENT_PAGE_ACTIVE__) return;
-  window.__ESPN_DRAFT_AGENT_PAGE_ACTIVE__ = true;
+  const generation = Number(window.__ESPN_DRAFT_AGENT_PAGE_GENERATION__ || 0) + 1;
+  window.__ESPN_DRAFT_AGENT_PAGE_GENERATION__ = generation;
+  const isCurrent = () => window.__ESPN_DRAFT_AGENT_PAGE_GENERATION__ === generation;
 
   const PAGE_SOURCE = "ESPN_DRAFT_AGENT_PAGE";
   const CONTENT_SOURCE = "ESPN_DRAFT_AGENT_CONTENT";
@@ -101,6 +102,7 @@
   }
 
   function emitSnapshot() {
+    if (!isCurrent()) return;
     const snapshot = buildSnapshot();
     if (snapshot) {
       window.postMessage({ source: PAGE_SOURCE, type: "SNAPSHOT", snapshot }, "*");
@@ -112,6 +114,7 @@
   }
 
   function executeMockPick(command) {
+    if (!isCurrent()) return;
     const store = findDraftStore();
     const draft = store?.draft;
     const fail = (message) => emitResult({ ok: false, message });
@@ -147,6 +150,7 @@
   }
 
   window.addEventListener("message", (event) => {
+    if (!isCurrent()) return;
     if (event.source !== window || event.data?.source !== CONTENT_SOURCE) return;
     if (event.data.type === "REQUEST_SNAPSHOT") emitSnapshot();
     if (event.data.type === "MOCK_PICK") executeMockPick(event.data.command);

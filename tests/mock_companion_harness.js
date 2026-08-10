@@ -6,6 +6,7 @@ const vm = require("vm");
 const listeners = new Map();
 const results = [];
 let selectedId = null;
+let selectionCalls = 0;
 const player = {
   id: 42,
   fullName: "Test Runner",
@@ -23,7 +24,7 @@ const draft = {
   teams: [{ teamId: 6, draftOrder: 5 }],
   isMockLeague: false,
   isCurrentlyMyPick: () => true,
-  sendSelectMessage: (id) => { selectedId = id; }
+  sendSelectMessage: (id) => { selectedId = id; selectionCalls += 1; }
 };
 const store = { draft, playerPool: [player] };
 const link = { __reactFiberForTest: { memoizedProps: { store } } };
@@ -36,16 +37,18 @@ class CustomEvent {
 }
 
 const window = {
-  addEventListener(type, callback) { listeners.set(type, callback); },
+  addEventListener(type, callback) {
+    listeners.set(type, [...(listeners.get(type) || []), callback]);
+  },
   dispatchEvent(event) {
     if (event.type === "ESPN_DRAFT_AGENT_MOCK_PICK_RESULT") results.push(event.detail);
-    listeners.get(event.type)?.(event);
+    for (const callback of listeners.get(event.type) || []) callback(event);
   },
   postMessage(data) {
     if (data?.source === "ESPN_DRAFT_AGENT_PAGE" && data.type === "MOCK_PICK_RESULT") {
       results.push(data.result);
     }
-    listeners.get("message")?.({ source: window, data });
+    for (const callback of listeners.get("message") || []) callback({ source: window, data });
   }
 };
 const context = {
@@ -55,6 +58,10 @@ const context = {
   setInterval: () => 0,
   console
 };
+vm.runInNewContext(
+  fs.readFileSync("browser-companion/page-observer.js", "utf8"),
+  context
+);
 vm.runInNewContext(
   fs.readFileSync("browser-companion/page-observer.js", "utf8"),
   context
@@ -86,7 +93,7 @@ if (selectedId !== null || !results.at(-1)?.message.includes("stale")) {
 }
 
 command();
-if (selectedId !== 42 || results.at(-1)?.ok !== true) {
+if (selectedId !== 42 || selectionCalls !== 1 || results.at(-1)?.ok !== true) {
   throw new Error("A valid mock pick was not sent");
 }
 
