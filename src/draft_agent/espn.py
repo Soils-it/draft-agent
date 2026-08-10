@@ -48,10 +48,12 @@ class EspnDraftBridge:
         return final_pick + 1
 
     @staticmethod
-    def _catalog(payload: dict[str, Any], historical: list[Player]) -> tuple[list[Player], float]:
+    def _catalog(
+        payload: dict[str, Any], historical: list[Player]
+    ) -> tuple[list[Player], float, float]:
         raw_catalog = payload.get("player_catalog")
         if raw_catalog is None:
-            return historical, 1.0
+            return historical, 1.0, sum(bool(player.signals) for player in historical) / max(len(historical), 1)
         if not isinstance(raw_catalog, list) or not raw_catalog:
             raise ValueError("player_catalog must be a non-empty list")
 
@@ -117,7 +119,7 @@ class EspnDraftBridge:
                         projected_points_override=projection,
                     )
                 )
-        return merged, enriched / len(merged)
+        return merged, enriched / len(merged), sum(bool(player.signals) for player in merged) / len(merged)
 
     def ingest(
         self,
@@ -149,7 +151,7 @@ class EspnDraftBridge:
         if set(available_ids) & set(roster_ids):
             raise ValueError("a player cannot be both available and on the roster")
 
-        merged_players, enrichment_rate = self._catalog(payload, players)
+        merged_players, enrichment_rate, signal_rate = self._catalog(payload, players)
         by_espn_id = {
             player.external_ids["espn"]: player
             for player in merged_players
@@ -187,6 +189,7 @@ class EspnDraftBridge:
             "match_rate": round(mapping_rate, 3),
             "catalog_size": len(merged_players),
             "historical_enrichment_rate": round(enrichment_rate, 3),
+            "signal_enrichment_rate": round(signal_rate, 3),
             "mapped_roster": len(mapped_roster),
             "roster": [
                 {**player.as_dict(), "projected_points": projected_points(player)}

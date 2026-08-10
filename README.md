@@ -1,13 +1,9 @@
 # ESPN Fantasy Draft Agent
 
 Local-first draft assistant for a 12-team ESPN full-PPR redraft league. The
-current MVP provides a transparent ranking engine, snake-draft simulation, an
-adjustable strategy, and a timed auto-pick flow. It starts with generated demo
-players and can load a prior-season nflverse statistical baseline.
-
-It does **not** log in to ESPN or submit real picks yet. That integration is
-intentionally separated from the ranking engine so the strategy can be tested
-in mock drafts first.
+application provides a transparent ranking engine, snake-draft simulation, an
+adjustable strategy, free current/historical data, and a timed mock-draft
+auto-pick flow. Real-league automatic selection remains hard-blocked.
 
 ## League configuration
 
@@ -35,12 +31,15 @@ be changed in Draft Settings. Opponent selections are simulated from ADP. Your
 recommended player is picked after a configurable countdown (20 seconds by
 default) unless you pause or choose an alternative.
 
-The Player Data panel can download the selected regular season from the
+Use **Load complete free data** before opening a mock. The Player Data panel
+downloads the selected regular season from the
 [nflverse data releases](https://github.com/nflverse/nflverse-data/releases).
-The files are free and CC BY 4.0 licensed. Downloaded CSVs are cached under
-`.cache/`, which is ignored by Git. This baseline extrapolates prior per-game
-production with conservative regression; it is clearly not a substitute for
-current projections, injuries, depth charts, or true market ADP.
+It then adds current full-PPR expert consensus and identity mappings from
+[DynastyProcess open data](https://github.com/dynastyprocess/data), plus injury,
+depth-chart, and 24-hour add/drop signals from the [Sleeper API](https://docs.sleeper.com/).
+All downloads are size-bounded and cached under ignored `.cache/` directories.
+No paid API key is required. ESPN's own projected points remain the primary
+live-draft projection after the companion connects.
 
 ## ESPN bridge status
 
@@ -59,10 +58,11 @@ override period and then revalidates the league, pick number, turn ownership,
 player availability, and ESPN mock status before sending exactly one pick.
 Real-league submission is hard-blocked in the page-context controller.
 
-`browser-companion/` contains an optional unpacked extension for sending those
-snapshots. Its read-only observer was verified against ESPN's 2026 mock-draft
-React store. The companion is shadow-only and contains no code that clicks or
-submits a player.
+`browser-companion/` contains the unpacked extension that sends snapshots and
+can submit the recommended player in ESPN mock drafts after the override timer.
+The page controller revalidates draft identity, turn ownership, player
+availability, and mock status immediately before submission. It will not
+submit a pick in a real league.
 
 Example payload using placeholder IDs:
 
@@ -100,16 +100,40 @@ python -m unittest discover -s tests -v
 Each available player receives normalized component scores for:
 
 - projected fantasy points
+- current full-PPR expert consensus and analyst uncertainty
 - value over replacement (VOR)
 - positional scarcity and nearby tier drop
 - roster need
 - likelihood the player is gone before the next selection
+- injury/availability, bye-week fit, and Sleeper add/drop trends
+- deterministic Monte Carlo value of this pick plus the next-turn options
 - upside
 - risk (subtracted)
 
 Every weight is adjustable in the dashboard, and every recommendation exposes
 its component scores. The model is deterministic for the same draft state and
 settings.
+
+Monte Carlo trials are adjustable from 50 to 2,000 in Draft Settings. The
+default 200-trial calculation is deterministic and normally completes well
+inside a live pick clock.
+
+## Historical backtesting
+
+Prepare a CSV containing dated preseason inputs joined to final outcomes, then run:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m draft_agent.backtest path\to\snapshots.csv --top 12
+```
+
+Required columns are `snapshot_date`, `season_start`, `player_id`, `name`,
+`team`, `position`, `adp`, `projected_points`, and `actual_points`. Optional
+columns are `consensus_rank`, `consensus_sd`, `bye_week`, and `injury_status`.
+The runner rejects snapshots dated on or after the season start to prevent
+outcome leakage, and reports actual-points and top-player hit-rate lift against
+a projection-only baseline. Archived FantasyPros snapshots from DynastyProcess
+and nflverse season results can be joined by the included provider IDs.
 
 ## Next phase: ESPN integration
 
