@@ -12,6 +12,7 @@ const injections = [];
 const fetchRequests = [];
 let installedListener = null;
 let updatedListener = null;
+let authoritativeOnClock = false;
 class FakeDate extends Date {
   static now() { return now; }
 }
@@ -23,7 +24,11 @@ const context = {
     return {
       ok: true,
       json: async () => ({
-        espn: { pending_espn_player_id: "42", match_rate: 1 },
+        espn: {
+          pending_espn_player_id: authoritativeOnClock ? "42" : null,
+          match_rate: 1,
+          on_clock: authoritativeOnClock
+        },
         settings: { override_seconds: 5 }
       })
     };
@@ -81,6 +86,14 @@ function sendSnapshot() {
     throw new Error("Open ESPN drafts were not automatically connected after extension reload");
   }
   await sendSnapshot();
+  now = 6000;
+  await sendSnapshot();
+  if (commands.length !== 0) {
+    throw new Error("A client on-clock flag bypassed the server's turn decision");
+  }
+  authoritativeOnClock = true;
+  now = 0;
+  await sendSnapshot();
   now = 4000;
   await sendSnapshot();
   if (commands.length !== 0) throw new Error("Mock pick fired before the override period");
@@ -89,7 +102,7 @@ function sendSnapshot() {
   if (commands.length !== 1 || commands[0].command.player_id !== "42") {
     throw new Error("Mock pick did not fire after the override period");
   }
-  if (statuses.length !== 3) throw new Error("Each accepted snapshot should update status");
+  if (statuses.length !== 5) throw new Error("Each accepted snapshot should update status");
   runtimeListener({
     type: "DRAFT_AGENT_PICK_RESULT",
     result: {

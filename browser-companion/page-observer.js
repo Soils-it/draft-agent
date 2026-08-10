@@ -58,6 +58,17 @@
     return candidates.map(Number).find(Number.isFinite) ?? 0;
   }
 
+  function isUserOnClock(draft, currentTeamId, userTeamId) {
+    if (typeof draft.isCurrentlyMyPick === "function") {
+      try {
+        return draft.isCurrentlyMyPick() === true;
+      } catch (_error) {
+        // Fall back for an ESPN store version whose helper cannot be invoked.
+      }
+    }
+    return currentTeamId === userTeamId;
+  }
+
   function buildSnapshot() {
     const store = findDraftStore();
     if (!store) return null;
@@ -88,7 +99,7 @@
       league_id: leagueId,
       draft_id: leagueId,
       overall_pick: draft.pickIndex + 1,
-      on_clock: currentTeamId === userTeamId,
+      on_clock: isUserOnClock(draft, currentTeamId, userTeamId),
       is_mock: draft.isMockLeague === true,
       user_slot: Number.isInteger(draftOrder) ? draftOrder + 1 : null,
       player_catalog: rankedPool.map((player) => ({

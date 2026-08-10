@@ -25,6 +25,12 @@ class EspnDraftBridge:
 
     positions = ("QB", "RB", "WR", "TE", "K", "DST")
 
+    @staticmethod
+    def _team_for_pick(overall: int, teams: int) -> int:
+        round_number = (overall - 1) // teams + 1
+        within_round = (overall - 1) % teams + 1
+        return within_round if round_number % 2 else teams + 1 - within_round
+
     def __init__(self, audit_path: Path | None = None, max_audit_entries: int = 500) -> None:
         self.mock_rosters: dict[str, set[str]] = {}
         self.exposure_limit = 0.0
@@ -32,6 +38,9 @@ class EspnDraftBridge:
         self.max_audit_entries = max_audit_entries
         self._audit_lock = threading.Lock()
         self.decision_log = self._load_decision_log()
+        if self.audit_path is not None and self.audit_path.exists():
+            with self._audit_lock:
+                self._persist_decision_log_locked()
         self.state: dict[str, object] = {
             "connected": False,
             "mode": "shadow",
@@ -49,7 +58,20 @@ class EspnDraftBridge:
             payload = json.loads(self.audit_path.read_text(encoding="utf-8"))
             if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
                 return []
-            return payload[-self.max_audit_entries :]
+            valid: list[dict[str, Any]] = []
+            for item in payload:
+                try:
+                    teams = int(item.get("teams", 12))
+                    decision_pick = int(item["decision_pick"])
+                    user_slot = int(item["user_slot"])
+                    if teams <= 0 or decision_pick <= 0:
+                        continue
+                    if self._team_for_pick(decision_pick, teams) != user_slot:
+                        continue
+                except (KeyError, TypeError, ValueError):
+                    continue
+                valid.append(item)
+            return valid[-self.max_audit_entries :]
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return []
 
@@ -206,6 +228,8 @@ class EspnDraftBridge:
         ranked: list[dict[str, object]],
         engine: DraftEngine,
     ) -> None:
+        if self._team_for_pick(decision_pick, engine.config.teams) != user_slot:
+            return
         now = datetime.now(timezone.utc).isoformat()
         with self._audit_lock:
             self._reconcile_decisions_locked(draft_id, roster, overall_pick)
@@ -242,6 +266,7 @@ class EspnDraftBridge:
                 "decision_pick": decision_pick,
                 "round": int(rules["round"]),
                 "user_slot": user_slot,
+                "teams": engine.config.teams,
                 "status": "pending",
                 "on_clock_seen": bool(on_clock or (existing or {}).get("on_clock_seen")),
                 "created_at": existing.get("created_at", now) if existing else now,
@@ -370,10 +395,7 @@ class EspnDraftBridge:
     def _next_user_pick(current_pick: int, config: LeagueConfig) -> int:
         final_pick = config.teams * config.roster_size
         for overall in range(current_pick + 1, final_pick + 1):
-            round_number = (overall - 1) // config.teams + 1
-            within_round = (overall - 1) % config.teams + 1
-            slot = within_round if round_number % 2 else config.teams + 1 - within_round
-            if slot == config.user_slot:
+            if EspnDraftBridge._team_for_pick(overall, config.teams) == config.user_slot:
                 return overall
         return final_pick + 1
 
@@ -478,6 +500,14 @@ class EspnDraftBridge:
         if not 1 <= user_slot <= config.teams:
             raise ValueError(f"user_slot must be between 1 and {config.teams}")
         snapshot_config = replace(config, user_slot=user_slot)
+        # Treat the page observer as an input, not as the final authority. ESPN's
+        # controllingTeam can remain pinned to the user's team between turns.
+        # Snake-order ownership prevents an opponent pick from arming automation
+        # or creating an impossible decision-audit record.
+        on_clock = bool(
+            payload["on_clock"]
+            and self._team_for_pick(overall_pick, snapshot_config.teams) == user_slot
+        )
         available_ids = self._ids(payload, "available_player_ids")
         roster_ids = self._ids(payload, "roster_player_ids")
         if not available_ids:
@@ -510,7 +540,7 @@ class EspnDraftBridge:
             )
         decision_pick = (
             overall_pick
-            if payload["on_clock"]
+            if on_clock
             else self._next_user_pick(overall_pick, snapshot_config)
         )
         ranked = engine.rank(
@@ -531,7 +561,7 @@ class EspnDraftBridge:
                 overall_pick,
                 decision_pick,
                 user_slot,
-                payload["on_clock"],
+                on_clock,
                 mapped_available,
                 mapped_roster,
                 ranked,
@@ -546,7 +576,7 @@ class EspnDraftBridge:
             "overall_pick": overall_pick,
             "decision_pick": decision_pick,
             "user_slot": user_slot,
-            "on_clock": payload["on_clock"],
+            "on_clock": on_clock,
             "is_mock": is_mock,
             "mock_history_count": mock_history_count,
             "mock_exposure_limit": round(self.exposure_limit, 2),
@@ -562,9 +592,9 @@ class EspnDraftBridge:
             "recommendations": recommendations,
             "prequeue_espn_player_ids": [item["espn_id"] for item in recommendations],
             "pending_espn_player_id": (
-                recommendations[0]["espn_id"] if payload["on_clock"] and recommendations else None
+                recommendations[0]["espn_id"] if on_clock and recommendations else None
             ),
-            "mock_command_ready": bool(payload["on_clock"] and recommendations),
+            "mock_command_ready": bool(on_clock and recommendations),
             "decision_log": self.decision_summary(),
             "received_at": datetime.now(timezone.utc).isoformat(),
             "message": "Recommendations are precomputed; the companion may submit only in mock mode.",

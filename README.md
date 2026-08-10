@@ -107,7 +107,8 @@ Each available player receives normalized component scores for:
 - roster need
 - starting-lineup improvement and incumbent quality at every position
 - likelihood the player is gone before the next selection
-- injury/availability, bye-week fit, and Sleeper add/drop trends
+- injury/availability, bye-week fit, nonlinear NFL-team/bye concentration, and
+  Sleeper add/drop trends
 - low-weight rookie camp role from depth-chart order and practice participation
 - deterministic Monte Carlo value of this pick plus the next-turn options
 - upside
@@ -135,10 +136,13 @@ scoring from dominating cross-position comparisons. It normally delays the
 first QB until round 4, but permits a top-36 consensus QB earlier when that
 player falls at least 12 picks below consensus. It blocks a backup QB through
 round 12 and then requires that backup to have fallen at least 20 picks below
-consensus. A top-48 overall incumbent QB suppresses QB2, and a top-60 incumbent
-TE suppresses TE2, unless the user explicitly prefers the candidate. RB and WR
-depth is evaluated by whether the candidate improves the actual 2RB/2WR/FLEX
-lineup; non-starting depth receives diminishing value as the room fills. First
+consensus. A healthy top-90 overall incumbent QB suppresses QB2 unless the
+candidate is at least 15 market spots better or projects at least 5% higher. A
+weak or questionable/out starter can still unlock late QB insurance. A top-60
+incumbent TE suppresses TE2, unless the user explicitly prefers the candidate.
+RB and WR depth is evaluated by whether the candidate improves the actual
+2RB/2WR/FLEX lineup; non-starting depth receives diminishing value as the room
+fills. First
 K and D/ST selections receive the same lineup-quality accounting, while their
 position caps prevent redundant specialists. The opening remains value-based
 between RB and WR, including an elite first-round WR. After a first-round WR, a
@@ -152,13 +156,21 @@ through round 4, 12 through round 8, 20 through round 12, and 35 afterward. RB
 replacement value is calculated deeper than QB replacement value to reflect
 two RB starters, FLEX demand, and the league's stronger RB scarcity.
 
+The team/bye concentration component is deliberately nonlinear. Adding a
+second player from the same NFL team or bye week is a small tiebreaker; adding a
+third receives a much larger penalty. It diversifies close decisions without
+overriding a clearly superior second player.
+
 Every ESPN decision is also written to the ignored local file
 `.cache/draft_decisions.json`. Each record retains the roster and active rules,
 top five overall candidates, best eligible candidate or blocking status for
 QB/RB/WR/TE/K/DST, raw components, signed contributions, submitted player, and
 whether the final roster addition matched the recommendation. Recent results
 appear in the dashboard. Complete records are available at `/api/decisions`
-and survive Python server restarts; at most 500 decisions are retained.
+and survive Python server restarts; at most 500 decisions are retained. The page
+observer uses ESPN's own current-turn helper, and the local bridge independently
+checks snake-order ownership. Impossible historical turn records are discarded
+when the audit is loaded.
 
 The Player Preferences panel accepts comma-separated **Prefer**, **Fade**, and
 **Never draft** names. Prefer/fade adjustments are intentionally strong enough

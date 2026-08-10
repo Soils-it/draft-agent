@@ -76,6 +76,16 @@ class EspnBridgeTests(unittest.TestCase):
         self.assertIsNone(state["pending_espn_player_id"])
         self.assertFalse(state["mock_command_ready"])
 
+    def test_server_rejects_false_on_clock_signal_on_an_opponent_pick(self):
+        payload = self.payload()
+        payload["overall_pick"] = 7
+        payload["on_clock"] = True
+        state = self.bridge.ingest(payload, self.players, self.engine, self.config)
+        self.assertFalse(state["on_clock"])
+        self.assertEqual(state["decision_pick"], 19)
+        self.assertIsNone(state["pending_espn_player_id"])
+        self.assertEqual(self.bridge.decisions()[0]["decision_pick"], 19)
+
     def test_current_catalog_supports_rookies_and_negative_dst_ids(self):
         payload = self.payload()
         payload["player_catalog"].extend(
@@ -174,6 +184,7 @@ class EspnBridgeTests(unittest.TestCase):
             self.assertEqual(state["decision_log"]["total"], 1)
             first = bridge.decisions()[0]
             self.assertEqual(set(first["top_by_position"]), set(bridge.positions))
+            self.assertEqual(first["teams"], 12)
             self.assertEqual(len(first["top_overall"]), 5)
             self.assertIn("components", first["recommended_player"])
             self.assertIn("contributions", first["recommended_player"])
@@ -209,6 +220,20 @@ class EspnBridgeTests(unittest.TestCase):
             reloaded = EspnDraftBridge(path)
             self.assertEqual(reloaded.decision_summary()["total"], 2)
             self.assertEqual(reloaded.decisions()[0]["selected_player"]["espn_id"], selected_id)
+
+    def test_decision_audit_discards_impossible_snake_turns(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "decisions.json"
+            path.write_text(
+                """[
+                    {"key":"draft:6","draft_id":"draft","decision_pick":6,"user_slot":6,"teams":12},
+                    {"key":"draft:7","draft_id":"draft","decision_pick":7,"user_slot":6,"teams":12}
+                ]""",
+                encoding="utf-8",
+            )
+            bridge = EspnDraftBridge(path)
+            self.assertEqual(bridge.decision_summary()["total"], 1)
+            self.assertEqual(bridge.decisions()[0]["decision_pick"], 6)
 
     def test_pick_result_requires_matching_record(self):
         with self.assertRaisesRegex(ValueError, "recorded decision"):

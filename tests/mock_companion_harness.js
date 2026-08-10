@@ -9,6 +9,7 @@ const snapshots = [];
 const intervals = [];
 let selectedId = null;
 let selectionCalls = 0;
+let myPick = false;
 const player = {
   id: 42,
   fullName: "Test Runner",
@@ -25,7 +26,7 @@ const draft = {
   controllingTeam: { teamId: 6 },
   teams: [{ teamId: 6, draftOrder: 5 }],
   isMockLeague: false,
-  isCurrentlyMyPick: () => true,
+  isCurrentlyMyPick: () => myPick,
   sendSelectMessage: (id) => { selectedId = id; selectionCalls += 1; }
 };
 const store = { draft, playerPool: [player] };
@@ -67,6 +68,9 @@ vm.runInNewContext(
   fs.readFileSync("browser-companion/page-observer.js", "utf8"),
   context
 );
+if (snapshots.at(-1)?.on_clock !== false) {
+  throw new Error("The observer trusted controllingTeam instead of ESPN's turn helper");
+}
 
 const freshDraft = { ...draft, pickIndex: 9 };
 const freshStore = { draft: freshDraft, playerPool: [player] };
@@ -121,6 +125,7 @@ if (selectedId !== null || !results.at(-1)?.message.includes("stale")) {
   throw new Error("A stale mock pick was not blocked");
 }
 
+myPick = true;
 command();
 if (selectedId !== 42 || selectionCalls !== 1 || results.at(-1)?.ok !== true) {
   throw new Error("A valid mock pick was not sent");

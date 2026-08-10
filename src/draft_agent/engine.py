@@ -30,6 +30,7 @@ class StrategyWeights:
     gone_next_pick: float = 0.06
     availability: float = 0.10
     bye_fit: float = 0.01
+    portfolio_concentration: float = 0.08
     trend: float = 0.02
     rookie_camp_role: float = 0.03
     preference: float = 0.25
@@ -51,7 +52,7 @@ class DraftEngine:
     # A 12-team, 1-QB league replaces quarterbacks near QB12, while the FLEX
     # and deeper RB/WR benches push replacement much farther down those pools.
     replacement_rank = {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12}
-    elite_starter_market = {"QB": 48, "TE": 60}
+    strong_starter_market = {"QB": 90, "TE": 60}
 
     def __init__(
         self,
@@ -173,21 +174,40 @@ class DraftEngine:
             if peer.player_id != player.player_id
         )
 
-    def _elite_starter_blocks_backup(
+    def _starter_blocks_backup(
         self,
         player: Player,
         roster: list[Player],
     ) -> bool:
         position = player.position
-        if position not in self.elite_starter_market:
+        if position not in self.strong_starter_market:
             return False
         incumbents = [item for item in roster if item.position == position]
         if len(incumbents) < self.config.starters[position]:
             return False
         if self._preference(player) > 0:
             return False
-        best_market_rank = min(self._market_rank(item) for item in incumbents)
-        return best_market_rank <= self.elite_starter_market[position]
+        incumbent = min(incumbents, key=self._market_rank)
+        incumbent_market_rank = self._market_rank(incumbent)
+        if position == "TE":
+            return incumbent_market_rank <= self.strong_starter_market[position]
+
+        # In a 1-QB league, a healthy top-90 overall starter makes QB2 an
+        # inefficient bench use unless the candidate is a real upgrade. A weak
+        # or injured starter may still justify late insurance.
+        starter_is_weak = incumbent_market_rank > self.strong_starter_market["QB"]
+        starter_is_injured = self._availability(incumbent) < 0.86
+        candidate_market_rank = self._market_rank(player)
+        incumbent_points = projected_points(incumbent)
+        candidate_points = projected_points(player)
+        material_upgrade = (
+            candidate_market_rank <= incumbent_market_rank - 15
+            or (
+                incumbent_points > 0
+                and candidate_points >= incumbent_points * 1.05
+            )
+        )
+        return not (starter_is_weak or starter_is_injured or material_upgrade)
 
     @staticmethod
     def _skill_lineup_points(roster: list[Player]) -> tuple[float, list[float]]:
@@ -230,7 +250,7 @@ class DraftEngine:
             return 1.0
         if player.position in {"QB", "TE"}:
             best_market_rank = min(self._market_rank(item) for item in same_position)
-            threshold = self.elite_starter_market[player.position]
+            threshold = self.strong_starter_market[player.position]
             weakness = min(1.0, max(0.0, (best_market_rank - threshold) / threshold))
             ratio = min(candidate_points / max(incumbent_points, 1.0), 1.0)
             return max(0.05, ratio * (0.2 + 0.45 * weakness))
@@ -256,7 +276,7 @@ class DraftEngine:
             # roster spot when the market has let one fall at least 20 picks.
             if counts[position] and current_pick - self._market_rank(player) < 20:
                 return -1.0
-            if counts[position] and self._elite_starter_blocks_backup(player, roster):
+            if counts[position] and self._starter_blocks_backup(player, roster):
                 return -1.0
             if not counts[position] and round_number < 4:
                 market_rank = self._market_rank(player)
@@ -276,7 +296,7 @@ class DraftEngine:
         if position == "TE":
             if counts[position] and round_number < 13:
                 return -1.0
-            if counts[position] and self._elite_starter_blocks_backup(player, roster):
+            if counts[position] and self._starter_blocks_backup(player, roster):
                 return -1.0
             if counts[position] == 0 and round_number < 4:
                 return -1.0
@@ -406,6 +426,35 @@ class DraftEngine:
             for item in roster
         )
         return max(0.0, 1.0 - clashes * 0.5)
+
+    @staticmethod
+    def _portfolio_concentration(player: Player, roster: list[Player]) -> float:
+        """Penalize a third correlated player much more than a second one."""
+        team = player.team.strip().upper()
+        same_team = (
+            sum(item.team.strip().upper() == team for item in roster)
+            if team and team != "FA"
+            else 0
+        )
+        bye = player.signals.get("bye_week")
+        same_bye = (
+            sum(item.signals.get("bye_week") == bye for item in roster)
+            if bye
+            else 0
+        )
+
+        def severity(count: int, *, bye_week: bool = False) -> float:
+            if count <= 0:
+                return 0.0
+            if count == 1:
+                return 0.25
+            if bye_week and count == 2:
+                return 0.75
+            return 1.0
+
+        team_penalty = severity(same_team)
+        bye_penalty = severity(same_bye, bye_week=True)
+        return 0.65 * team_penalty + 0.35 * bye_penalty
 
     def rank(
         self,
@@ -565,6 +614,7 @@ class DraftEngine:
             rookie_camp_role = self._rookie_camp_role(player)
             availability = self._availability(player)
             bye_fit = self._bye_fit(player, roster)
+            portfolio_concentration = self._portfolio_concentration(player, roster)
             effective_risk = min(1.0, player.risk + (1 - availability) * 0.7 + uncertainty * 0.15)
             detail = {
                 "projection": components["projection"][player.player_id],
@@ -583,6 +633,7 @@ class DraftEngine:
                 "gone_next_pick": gone,
                 "availability": availability,
                 "bye_fit": bye_fit,
+                "portfolio_concentration": portfolio_concentration,
                 "trend": components["trend"][player.player_id],
                 "rookie_camp_role": rookie_camp_role,
                 "preference": preference,
@@ -594,6 +645,7 @@ class DraftEngine:
                 "market_dominance",
                 "reach_penalty",
                 "exposure_penalty",
+                "portfolio_concentration",
                 "risk",
             }
             contributions = {

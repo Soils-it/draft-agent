@@ -87,7 +87,7 @@ async function considerMockPick(snapshot, result, enabled, tabId) {
   const recommendation = result?.espn?.pending_espn_player_id;
   const pickKey = `${snapshot.league_id}:${snapshot.overall_pick}`;
   const current = activePicks.get(tabId);
-  if (!enabled || !snapshot.on_clock || !recommendation) {
+  if (!enabled || result?.espn?.on_clock !== true || !recommendation) {
     activePicks.delete(tabId);
     return;
   }

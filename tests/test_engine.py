@@ -180,6 +180,52 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(ranked["healthy"]["components"]["bye_fit"], 0.5)
         self.assertGreater(ranked["healthy"]["components"]["availability"], ranked["hurt"]["components"]["availability"])
 
+    def test_portfolio_concentration_penalizes_a_third_teammate_non_linearly(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        chase = Player(
+            "chase", "Ja'Marr Chase", "CIN", "WR", 2,
+            signals={"bye_week": 6},
+        )
+        brown = Player(
+            "brown", "Chase Brown", "CIN", "RB", 19,
+            signals={"bye_week": 6},
+        )
+        higgins = Player(
+            "higgins", "Tee Higgins", "CIN", "WR", 35,
+            signals={"bye_week": 6},
+        )
+
+        self.assertEqual(engine._portfolio_concentration(brown, [chase]), 0.25)
+        self.assertAlmostEqual(
+            engine._portfolio_concentration(higgins, [chase, brown]),
+            0.9125,
+        )
+
+        lamar = Player(
+            "lamar", "Lamar Jackson", "BAL", "QB", 32,
+            projected_points_override=322.5,
+            signals={"consensus_rank": 32.3, "bye_week": 13},
+        )
+        higgins = Player(
+            "higgins", "Tee Higgins", "CIN", "WR", 35,
+            projected_points_override=218.5,
+            signals={"consensus_rank": 35.3, "bye_week": 6},
+        )
+        roster = [
+            chase,
+            brown,
+            Player("pickens", "George Pickens", "DAL", "WR", 19),
+        ]
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"portfolio_concentration": 1})
+        ranked = engine.rank([higgins, lamar], roster, 43, 54)
+        self.assertEqual(ranked[0]["id"], "lamar")
+        higgins_result = next(item for item in ranked if item["id"] == "higgins")
+        self.assertLess(
+            higgins_result["contributions"]["portfolio_concentration"],
+            0,
+        )
+
     def test_one_qb_strategy_blocks_early_qbs_and_early_backup(self):
         elite_qb = Player("elite-qb", "Elite QB", "BUF", "QB", 20, projected_points_override=400)
         rb = Player("rb", "Starting RB", "DET", "RB", 20, projected_points_override=270)
@@ -445,7 +491,7 @@ class EngineTests(unittest.TestCase):
 
     def test_backup_qb_requires_twenty_pick_market_discount(self):
         roster = [
-            Player("my-qb", "My QB", "AAA", "QB", 80),
+            Player("my-qb", "My QB", "AAA", "QB", 100),
             Player("rb1", "RB One", "BBB", "RB", 20),
             Player("rb2", "RB Two", "CCC", "RB", 30),
             Player("wr1", "WR One", "DDD", "WR", 15),
@@ -465,6 +511,88 @@ class EngineTests(unittest.TestCase):
         }
         self.assertIn("value-qb", ranked_ids)
         self.assertNotIn("fair-qb", ranked_ids)
+
+    def test_healthy_top_ninety_qb_blocks_a_redundant_late_backup(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        herbert = Player(
+            "herbert",
+            "Justin Herbert",
+            "LAC",
+            "QB",
+            70,
+            projected_points_override=282.7,
+            signals={"consensus_rank": 69.6},
+        )
+        baker = Player(
+            "baker",
+            "Baker Mayfield",
+            "TB",
+            "QB",
+            118,
+            projected_points_override=265.6,
+            signals={"consensus_rank": 118.2},
+        )
+        self.assertTrue(engine._starter_blocks_backup(baker, [herbert]))
+
+        core = [
+            herbert,
+            Player("rb1", "RB One", "AAA", "RB", 20),
+            Player("rb2", "RB Two", "BBB", "RB", 30),
+            Player("wr1", "WR One", "CCC", "WR", 15),
+            Player("wr2", "WR Two", "DDD", "WR", 25),
+            Player("te1", "TE One", "EEE", "TE", 100),
+        ]
+        bench = Player(
+            "bench", "Bench WR", "FFF", "WR", 150,
+            signals={"consensus_rank": 150},
+        )
+        ranked_ids = {
+            item["id"] for item in engine.rank([baker, bench], core, 150, 163)
+        }
+        self.assertNotIn("baker", ranked_ids)
+
+    def test_injury_or_material_upgrade_can_unlock_late_qb2(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        candidate = Player(
+            "candidate",
+            "Candidate QB",
+            "BBB",
+            "QB",
+            120,
+            projected_points_override=280,
+            signals={"consensus_rank": 120},
+        )
+        injured = Player(
+            "injured",
+            "Injured Starter",
+            "AAA",
+            "QB",
+            60,
+            projected_points_override=300,
+            signals={"consensus_rank": 60},
+            context={"injury_status": "Questionable"},
+        )
+        self.assertFalse(engine._starter_blocks_backup(candidate, [injured]))
+
+        healthy = Player(
+            "healthy",
+            "Healthy Starter",
+            "AAA",
+            "QB",
+            70,
+            projected_points_override=260,
+            signals={"consensus_rank": 70},
+        )
+        projected_upgrade = Player(
+            "upgrade",
+            "Projected Upgrade",
+            "CCC",
+            "QB",
+            110,
+            projected_points_override=275,
+            signals={"consensus_rank": 110},
+        )
+        self.assertFalse(engine._starter_blocks_backup(projected_upgrade, [healthy]))
 
     def test_elite_qb_and_te_starters_block_redundant_backups(self):
         roster = [
@@ -783,6 +911,8 @@ class EngineTests(unittest.TestCase):
         self.assertIn("simulation", first[0]["components"])
         self.assertIn("lineup_quality", first[0]["components"])
         self.assertIn("lineup_quality", first[0]["contributions"])
+        self.assertIn("portfolio_concentration", first[0]["components"])
+        self.assertIn("portfolio_concentration", first[0]["contributions"])
         self.assertAlmostEqual(
             first[0]["draft_score"],
             sum(first[0]["contributions"].values()),

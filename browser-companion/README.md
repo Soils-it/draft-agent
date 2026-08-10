@@ -20,11 +20,13 @@ agents while retaining more than a full 12-team, 16-round draft pool. The local
 agent precomputes five choices for the next user pick even when the user is not
 currently on the clock.
 
-Version 0.8 sends the store's boolean mock-status flag so optional player
+Version 0.9 uses ESPN's `isCurrentlyMyPick()` helper instead of the store's
+sticky controlling-team field. The local bridge independently verifies the
+snake-order owner before it arms a mock pick or records a decision. The
+companion also sends the store's boolean mock-status flag so optional player
 exposure limits can apply to practice drafts without affecting real-draft
-recommendations. It also reports successful mock submissions to the local
-decision audit so the final pick can be reconciled even when ESPN immediately
-closes the completed draft room.
+recommendations, and reports successful mock submissions to the local decision
+audit even when ESPN immediately closes the completed draft room.
 
 ## Development installation
 
