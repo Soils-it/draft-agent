@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from .config import LeagueConfig
 from .models import Player
 from .scoring import projected_points
+from .simulation import simulate_turn_value
 
 
 @dataclass
@@ -23,6 +24,7 @@ class StrategyWeights:
     trend: float = 0.02
     upside: float = 0.05
     risk: float = 0.07
+    simulation: float = 0.12
 
     def update(self, values: dict[str, float]) -> None:
         for key in asdict(self):
@@ -36,9 +38,15 @@ class StrategyWeights:
 class DraftEngine:
     replacement_rank = {"QB": 12, "RB": 30, "WR": 30, "TE": 12, "K": 12, "DST": 12}
 
-    def __init__(self, config: LeagueConfig, weights: StrategyWeights | None = None):
+    def __init__(
+        self,
+        config: LeagueConfig,
+        weights: StrategyWeights | None = None,
+        simulation_samples: int = 200,
+    ):
         self.config = config
         self.weights = weights or StrategyWeights()
+        self.simulation_samples = simulation_samples
 
     @staticmethod
     def _normalize(values: dict[str, float]) -> dict[str, float]:
@@ -193,5 +201,33 @@ class DraftEngine:
                     "components": {key: round(value, 3) for key, value in detail.items()},
                 }
             )
+        simulation = simulate_turn_value(
+            eligible,
+            points,
+            current_pick,
+            next_pick,
+            self.simulation_samples,
+        )
+        future_values = self._normalize(
+            {player_id: value.expected_roster_value for player_id, value in simulation.items()}
+        )
+        for result in results:
+            player_id = str(result["id"])
+            outcome = simulation.get(player_id)
+            if outcome is None:
+                result["survival_probability"] = None
+                result["expected_roster_value"] = None
+                result["simulation_samples"] = self.simulation_samples
+                result["components"]["simulation"] = 0.0
+                continue
+            result["draft_score"] = round(
+                float(result["draft_score"])
+                + self.weights.simulation * future_values[player_id],
+                4,
+            )
+            result["survival_probability"] = round(outcome.survival_probability, 3)
+            result["expected_roster_value"] = round(outcome.expected_roster_value, 1)
+            result["simulation_samples"] = self.simulation_samples
+            result["components"]["simulation"] = round(future_values[player_id], 3)
         results.sort(key=lambda item: (-float(item["draft_score"]), float(item["adp"])))
         return results[:limit]

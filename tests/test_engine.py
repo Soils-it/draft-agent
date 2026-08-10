@@ -71,11 +71,22 @@ class EngineTests(unittest.TestCase):
             self.assertLessEqual(sum(player.position == position for player in roster), cap)
 
     def test_runtime_settings_validation(self):
-        self.assertEqual(validate_settings({"user_slot": 12, "override_seconds": 30}, 6, 20, 12), (12, 30))
+        self.assertEqual(validate_settings({"user_slot": 12, "override_seconds": 30}, 6, 20, 12), (12, 30, 200))
         with self.assertRaises(ValueError):
             validate_settings({"user_slot": 0}, 6, 20, 12)
         with self.assertRaises(ValueError):
             validate_settings({"override_seconds": 3}, 6, 20, 12)
+        with self.assertRaises(ValueError):
+            validate_settings({"simulation_samples": 20}, 6, 20, 12)
+
+    def test_simulation_is_deterministic_and_exposed(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        first = engine.rank(self.players, [], 6, 19, 5)
+        second = engine.rank(self.players, [], 6, 19, 5)
+        self.assertEqual(first, second)
+        self.assertEqual(first[0]["simulation_samples"], 50)
+        self.assertIsNotNone(first[0]["survival_probability"])
+        self.assertIn("simulation", first[0]["components"])
 
 
 if __name__ == "__main__":

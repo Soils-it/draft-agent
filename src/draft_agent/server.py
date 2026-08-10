@@ -17,6 +17,7 @@ from .session import DraftSession
 
 SESSION = DraftSession(demo_players())
 OVERRIDE_SECONDS = 20
+SIMULATION_SAMPLES = 200
 DATA_SOURCE: dict[str, object] = {
     "name": "generated demo data",
     "season": None,
@@ -30,6 +31,7 @@ def _state_payload() -> dict[str, object]:
     payload["settings"] = {
         "user_slot": SESSION.config.user_slot,
         "override_seconds": OVERRIDE_SECONDS,
+        "simulation_samples": SESSION.engine.simulation_samples,
     }
     payload["data_source"] = DATA_SOURCE
     payload["espn"] = ESPN_BRIDGE.state
@@ -37,15 +39,19 @@ def _state_payload() -> dict[str, object]:
 
 
 def validate_settings(
-    values: dict[str, Any], current_slot: int, current_seconds: int, teams: int
-) -> tuple[int, int]:
+    values: dict[str, Any], current_slot: int, current_seconds: int, teams: int,
+    current_samples: int = 200,
+) -> tuple[int, int, int]:
     slot = int(values.get("user_slot", current_slot))
     seconds = int(values.get("override_seconds", current_seconds))
+    samples = int(values.get("simulation_samples", current_samples))
     if not 1 <= slot <= teams:
         raise ValueError(f"user_slot must be between 1 and {teams}")
     if not 5 <= seconds <= 120:
         raise ValueError("override_seconds must be between 5 and 120")
-    return slot, seconds
+    if not 50 <= samples <= 2000:
+        raise ValueError("simulation_samples must be between 50 and 2000")
+    return slot, seconds, samples
 
 
 class DraftRequestHandler(BaseHTTPRequestHandler):
@@ -82,7 +88,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        global DATA_SOURCE, OVERRIDE_SECONDS, SESSION
+        global DATA_SOURCE, OVERRIDE_SECONDS, SESSION, SIMULATION_SAMPLES
         try:
             body = self._body()
             if self.path == "/api/pick":
@@ -90,22 +96,25 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/weights":
                 SESSION.engine.weights.update(body)
             elif self.path == "/api/settings":
-                slot, OVERRIDE_SECONDS = validate_settings(
+                slot, OVERRIDE_SECONDS, SIMULATION_SAMPLES = validate_settings(
                     body,
                     SESSION.config.user_slot,
                     OVERRIDE_SECONDS,
                     SESSION.config.teams,
+                    SESSION.engine.simulation_samples,
                 )
                 if slot != SESSION.config.user_slot:
                     SESSION = DraftSession(
                         demo_players(), replace(SESSION.config, user_slot=slot)
                     )
+                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
             elif self.path == "/api/data/nflverse":
                 season = int(body.get("season", date.today().year - 1))
                 if not 1999 <= season <= date.today().year:
                     raise ValueError("season is outside the available nflverse range")
                 result = NflverseProvider().load(season, bool(body.get("refresh", False)))
                 SESSION = DraftSession(result.players, SESSION.config)
+                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
                 DATA_SOURCE = {
                     "name": result.source,
                     "season": result.season,
@@ -118,6 +127,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 result = FreeSignalProvider().load(bool(body.get("refresh", False)))
                 enriched, matched = apply_signals(list(SESSION.players.values()), result.records)
                 SESSION = DraftSession(enriched, SESSION.config)
+                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
                 DATA_SOURCE = {
                     **DATA_SOURCE,
                     "signals": result.sources,
@@ -135,6 +145,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/api/reset":
                 SESSION = DraftSession(demo_players(), SESSION.config)
+                SESSION.engine.simulation_samples = SIMULATION_SAMPLES
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
