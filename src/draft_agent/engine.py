@@ -99,15 +99,14 @@ class DraftEngine:
                 early_value = market_rank <= 36 and current_pick - market_rank >= 12
                 if not early_value:
                     return -1.0
-        # After starting WR-WR, prioritize an RB instead of taking a third WR
-        # at ordinary market value. Preserve the exception for a true draft-day
-        # faller so roster construction never forces us to ignore a bargain.
+        # This league's RB pool dries up faster than its WR pool. After a WR-WR
+        # opening, do not take WR3 before securing RB1, even when the receiver
+        # falls past consensus.
         if (
             position == "WR"
             and counts["WR"] >= 2
             and counts["RB"] == 0
             and round_number < 4
-            and current_pick - self._market_rank(player) < 10
         ):
             return -1.0
         if position == "TE" and counts[position] and round_number < 13:

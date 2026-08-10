@@ -120,15 +120,15 @@ scoring from dominating cross-position comparisons. It normally delays the
 first QB until round 4, but permits a top-36 consensus QB earlier when that
 player falls at least 12 picks below consensus. It blocks a backup QB through
 round 12 and then requires that backup to have fallen at least 20 picks below
-consensus. After a WR-WR opening, a third WR is deferred until RB1 unless the
-receiver has fallen at least 10 picks. The profile reserves K and D/ST for
-rounds 15-16, requires RB1/WR1 by round 4 and RB2/WR2 by rounds 6-7, and caps
-the planned RB bench at five. TE urgency increases across rounds 8-10 and
-reacts to projected tier cliffs. A market guardrail limits reaches to 12 picks
-through round 8, 20 picks through round 12, and 35 picks afterward, with a
-fallback when a forced lineup requirement has no candidate in range. RB
-replacement value is calculated deeper than QB replacement value to reflect
-two RB starters, FLEX demand, and the league's stronger RB scarcity.
+consensus. After a WR-WR opening, a third WR is always deferred until RB1. The
+profile reserves K and D/ST for rounds 15-16, requires RB1/WR1 by round 4 and
+RB2/WR2 by rounds 6-7, and caps the planned RB bench at five. TE urgency
+increases across rounds 8-10 and reacts to projected tier cliffs. A market
+guardrail limits reaches to 12 picks through round 8, 20 picks through round
+12, and 35 picks afterward, with a fallback when a forced lineup requirement
+has no candidate in range. RB replacement value is calculated deeper than QB
+replacement value to reflect two RB starters, FLEX demand, and the league's
+stronger RB scarcity.
 
 Rookie camp information is intentionally a supporting signal, not a primary
 ranking. The free Sleeper feed supplies rookie experience, current depth-chart

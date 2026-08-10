@@ -99,7 +99,7 @@ class EngineTests(unittest.TestCase):
         ranked = engine.rank(candidates, [], 30, 43)
         self.assertEqual(ranked[0]["id"], "fallen-qb")
 
-    def test_third_early_wr_requires_discount_before_first_rb(self):
+    def test_third_early_wr_is_blocked_before_first_rb(self):
         engine = DraftEngine(self.config, simulation_samples=50)
         roster = [
             Player("wr1", "WR One", "AAA", "WR", 10),
@@ -138,7 +138,8 @@ class EngineTests(unittest.TestCase):
         ranked_ids = {
             item["id"] for item in engine.rank([fallen_wr, rb], roster, 36, 49)
         }
-        self.assertIn("fallen-wr", ranked_ids)
+        self.assertNotIn("fallen-wr", ranked_ids)
+        self.assertEqual(ranked_ids, {"rb"})
 
     def test_backup_qb_requires_twenty_pick_market_discount(self):
         roster = [
