@@ -18,6 +18,7 @@ class StrategyWeights:
     scarcity: float = 0.10
     tier_drop: float = 0.08
     roster_need: float = 0.12
+    position_value: float = 0.12
     gone_next_pick: float = 0.08
     availability: float = 0.06
     bye_fit: float = 0.02
@@ -36,7 +37,9 @@ class StrategyWeights:
 
 
 class DraftEngine:
-    replacement_rank = {"QB": 12, "RB": 30, "WR": 30, "TE": 12, "K": 12, "DST": 12}
+    # A 12-team, 1-QB league replaces quarterbacks near QB12, while the FLEX
+    # and deeper RB/WR benches push replacement much farther down those pools.
+    replacement_rank = {"QB": 12, "RB": 36, "WR": 42, "TE": 12, "K": 12, "DST": 12}
 
     def __init__(
         self,
@@ -62,8 +65,17 @@ class DraftEngine:
         position = player.position
         if counts[position] >= self.config.position_caps[position]:
             return -1.0
+        # This league starts one QB and one TE. A second one is a late bench
+        # option, never a reason to pass on starting RB/WR talent in rounds 1-12.
+        if position == "QB":
+            if counts[position] and round_number < 13:
+                return -1.0
+            if not counts[position] and round_number < 4:
+                return -1.0
+        if position == "TE" and counts[position] and round_number < 13:
+            return -1.0
         if position in {"K", "DST"}:
-            return 0.8 if round_number >= 15 and counts[position] == 0 else 0.02
+            return 1.25 if round_number >= 15 and counts[position] == 0 else -1.0
         required = self.config.starters[position]
         if counts[position] < required:
             return 1.0
@@ -74,6 +86,52 @@ class DraftEngine:
         if position in {"QB", "TE"} and counts[position] == 0:
             return 0.9
         return 0.18
+
+    def _required_positions(self, roster: list[Player], round_number: int) -> set[str]:
+        """Return starter positions that can no longer safely be deferred."""
+        counts = Counter(item.position for item in roster)
+        required: set[str] = set()
+        if round_number >= 4 and counts["RB"] < 1:
+            required.add("RB")
+        if round_number >= 4 and counts["WR"] < 1:
+            required.add("WR")
+        if round_number >= 6 and counts["RB"] < 2:
+            required.add("RB")
+        if round_number >= 7 and counts["WR"] < 2:
+            required.add("WR")
+        if round_number >= 8 and counts["RB"] >= counts["WR"] + 2 and counts["WR"] < 5:
+            required.add("WR")
+        if round_number >= 8 and counts["WR"] >= counts["RB"] + 3 and counts["RB"] < 5:
+            required.add("RB")
+        if round_number >= 10 and counts["QB"] < 1:
+            required.add("QB")
+        if round_number >= 11 and counts["TE"] < 1:
+            required.add("TE")
+        if round_number >= 15:
+            required.update(position for position in ("K", "DST") if counts[position] < 1)
+        return required
+
+    @staticmethod
+    def _position_value(player: Player, roster: list[Player], round_number: int) -> float:
+        counts = Counter(item.position for item in roster)
+        position = player.position
+        if position == "RB":
+            if counts[position] < 2:
+                return 1.0
+            if counts[position] >= 4:
+                return 0.3
+            return 0.9 if round_number <= 8 else 0.65
+        if position == "WR":
+            if counts[position] < 2:
+                return 0.92
+            if counts[position] >= 5:
+                return 0.25
+            return 0.78 if round_number <= 8 else 0.62
+        if position == "QB":
+            return 0.62 if counts[position] == 0 else 0.12
+        if position == "TE":
+            return 0.6 if counts[position] == 0 else 0.12
+        return 0.05
 
     @staticmethod
     def _availability(player: Player) -> float:
@@ -107,10 +165,12 @@ class DraftEngine:
         limit: int = 10,
     ) -> list[dict[str, object]]:
         round_number = (current_pick - 1) // self.config.teams + 1
+        required_positions = self._required_positions(roster, round_number)
         eligible = [
             player
             for player in available
             if self._roster_need(player, roster, round_number) >= 0
+            and (not required_positions or player.position in required_positions)
         ]
         points = {p.player_id: projected_points(p) for p in eligible}
         by_position: dict[str, list[Player]] = defaultdict(list)
@@ -118,6 +178,11 @@ class DraftEngine:
             by_position[player.position].append(player)
         for group in by_position.values():
             group.sort(key=lambda item: points[item.player_id], reverse=True)
+
+        projection_relative: dict[str, float] = {}
+        for group in by_position.values():
+            normalized = self._normalize({player.player_id: points[player.player_id] for player in group})
+            projection_relative.update(normalized)
 
         vor_raw: dict[str, float] = {}
         scarcity_raw: dict[str, float] = {}
@@ -146,7 +211,9 @@ class DraftEngine:
         }
 
         components = {
-            "projection": self._normalize(points),
+            # Raw QB totals cannot be compared to RB/WR totals in a 1-QB league.
+            # This measures projection quality within each player's position.
+            "projection": projection_relative,
             "consensus": self._normalize(consensus_raw),
             "vor": self._normalize(vor_raw),
             "scarcity": self._normalize(scarcity_raw),
@@ -162,6 +229,7 @@ class DraftEngine:
             uncertainty = min(player.signals.get("consensus_sd", 8.0) / 30, 1.0)
             gone = 1 / (1 + math.exp((blended_rank - (current_pick + picks_away * 0.55)) / (6.5 + 4 * uncertainty)))
             roster_need = self._roster_need(player, roster, round_number)
+            position_value = self._position_value(player, roster, round_number)
             availability = self._availability(player)
             bye_fit = self._bye_fit(player, roster)
             effective_risk = min(1.0, player.risk + (1 - availability) * 0.7 + uncertainty * 0.15)
@@ -172,6 +240,7 @@ class DraftEngine:
                 + self.weights.scarcity * components["scarcity"][player.player_id]
                 + self.weights.tier_drop * components["tier_drop"][player.player_id]
                 + self.weights.roster_need * roster_need
+                + self.weights.position_value * position_value
                 + self.weights.gone_next_pick * gone
                 + self.weights.availability * availability
                 + self.weights.bye_fit * bye_fit
@@ -186,6 +255,7 @@ class DraftEngine:
                 "scarcity": components["scarcity"][player.player_id],
                 "tier_drop": components["tier_drop"][player.player_id],
                 "roster_need": roster_need,
+                "position_value": position_value,
                 "gone_next_pick": gone,
                 "availability": availability,
                 "bye_fit": bye_fit,
@@ -201,9 +271,15 @@ class DraftEngine:
                     "components": {key: round(value, 3) for key, value in detail.items()},
                 }
             )
+        # Simulate marginal value over replacement, not raw fantasy points.
+        # Otherwise every trial incorrectly treats a second high-scoring QB as
+        # more useful than a starting RB or WR.
+        simulation_values = {
+            player_id: max(value, 0.0) for player_id, value in vor_raw.items()
+        }
         simulation = simulate_turn_value(
             eligible,
-            points,
+            simulation_values,
             current_pick,
             next_pick,
             self.simulation_samples,

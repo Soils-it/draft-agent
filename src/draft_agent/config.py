@@ -23,7 +23,7 @@ class LeagueConfig:
     position_caps: dict[str, int] = field(
         default_factory=lambda: {
             "QB": 2,
-            "RB": 8,
+            "RB": 5,
             "WR": 8,
             "TE": 2,
             "K": 1,

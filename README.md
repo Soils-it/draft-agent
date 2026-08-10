@@ -114,6 +114,14 @@ Every weight is adjustable in the dashboard, and every recommendation exposes
 its component scores. The model is deterministic for the same draft state and
 settings.
 
+The default 12-team, 1-QB roster-construction profile also prevents raw QB
+scoring from dominating cross-position comparisons. It delays the first QB
+until round 4, blocks a backup QB or TE through round 12, reserves K and D/ST
+for rounds 15-16, requires RB1/WR1 by round 4 and RB2/WR2 by rounds 6-7, and
+caps the planned RB bench at five. RB replacement value is calculated deeper
+than QB replacement value to reflect two RB starters, FLEX demand, and the
+league's stronger RB scarcity.
+
 Monte Carlo trials are adjustable from 50 to 2,000 in Draft Settings. The
 default 200-trial calculation is deterministic and normally completes well
 inside a live pick clock.

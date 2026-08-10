@@ -62,6 +62,63 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(ranked["healthy"]["components"]["bye_fit"], 0.5)
         self.assertGreater(ranked["healthy"]["components"]["availability"], ranked["hurt"]["components"]["availability"])
 
+    def test_one_qb_strategy_blocks_early_qbs_and_early_backup(self):
+        elite_qb = Player("elite-qb", "Elite QB", "BUF", "QB", 5, projected_points_override=400)
+        rb = Player("rb", "Starting RB", "DET", "RB", 20, projected_points_override=270)
+        engine = DraftEngine(self.config, simulation_samples=50)
+        self.assertEqual(engine.rank([elite_qb, rb], [], 19, 30, 1)[0]["id"], "rb")
+        self.assertEqual(engine.rank([elite_qb, rb], [], 30, 43, 1)[0]["id"], "rb")
+        roster = [Player("my-qb", "My QB", "KC", "QB", 1, projected_points_override=390)]
+        ranked_ids = {item["id"] for item in engine.rank([elite_qb, rb], roster, 43, 54)}
+        self.assertNotIn("elite-qb", ranked_ids)
+
+    def test_roster_deadlines_force_second_rb_and_late_specialists(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        roster = [
+            Player("rb1", "RB One", "AAA", "RB", 1),
+            Player("wr1", "WR One", "BBB", "WR", 2),
+            Player("wr2", "WR Two", "CCC", "WR", 3),
+        ]
+        candidates = [
+            Player("rb2", "RB Two", "DDD", "RB", 60, projected_points_override=190),
+            Player("te", "Elite TE", "EEE", "TE", 1, projected_points_override=300),
+            Player("k", "Kicker", "FFF", "K", 1, projected_points_override=300),
+            Player("dst", "Defense", "GGG", "DST", 1, projected_points_override=300),
+        ]
+        ranked = engine.rank(candidates, roster, 67, 78)
+        self.assertEqual([item["id"] for item in ranked], ["rb2"])
+
+    def test_round_four_requires_missing_wr_and_rb_depth_stays_balanced(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        roster = [
+            Player("rb1", "RB One", "AAA", "RB", 1),
+            Player("rb2", "RB Two", "BBB", "RB", 2),
+            Player("te", "TE One", "CCC", "TE", 3),
+        ]
+        candidates = [
+            Player("rb3", "RB Three", "DDD", "RB", 1, projected_points_override=300),
+            Player("wr1", "WR One", "EEE", "WR", 50, projected_points_override=180),
+        ]
+        self.assertEqual(engine.rank(candidates, roster, 43, 54, 1)[0]["id"], "wr1")
+        balanced_late = roster + [
+            Player("wr1", "WR One", "EEE", "WR", 4),
+            Player("rb3", "RB Three", "DDD", "RB", 5),
+            Player("rb4", "RB Four", "FFF", "RB", 6),
+        ]
+        self.assertEqual(
+            engine.rank(
+                [
+                    Player("rb5", "RB Five", "GGG", "RB", 1, projected_points_override=300),
+                    Player("wr2", "WR Two", "HHH", "WR", 80, projected_points_override=150),
+                ],
+                balanced_late,
+                91,
+                102,
+                1,
+            )[0]["id"],
+            "wr2",
+        )
+
     def test_full_mock_draft_builds_legal_roster(self):
         session = DraftSession(self.players, self.config)
         while not session.is_complete:
