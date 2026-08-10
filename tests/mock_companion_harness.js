@@ -5,6 +5,8 @@ const vm = require("vm");
 
 const listeners = new Map();
 const results = [];
+const snapshots = [];
+const intervals = [];
 let selectedId = null;
 let selectionCalls = 0;
 const player = {
@@ -27,7 +29,7 @@ const draft = {
   sendSelectMessage: (id) => { selectedId = id; selectionCalls += 1; }
 };
 const store = { draft, playerPool: [player] };
-const link = { __reactFiberForTest: { memoizedProps: { store } } };
+let currentLink = { __reactFiberForTest: { memoizedProps: { store } } };
 
 class CustomEvent {
   constructor(type, options = {}) {
@@ -48,20 +50,32 @@ const window = {
     if (data?.source === "ESPN_DRAFT_AGENT_PAGE" && data.type === "MOCK_PICK_RESULT") {
       results.push(data.result);
     }
+    if (data?.source === "ESPN_DRAFT_AGENT_PAGE" && data.type === "SNAPSHOT") {
+      snapshots.push(data.snapshot);
+    }
     for (const callback of listeners.get("message") || []) callback({ source: window, data });
   }
 };
 const context = {
   window,
-  document: { querySelector: () => link, querySelectorAll: () => [] },
+  document: { querySelector: () => currentLink, querySelectorAll: () => [] },
   CustomEvent,
-  setInterval: () => 0,
+  setInterval: (callback) => { intervals.push(callback); return intervals.length; },
   console
 };
 vm.runInNewContext(
   fs.readFileSync("browser-companion/page-observer.js", "utf8"),
   context
 );
+
+const freshDraft = { ...draft, pickIndex: 9 };
+const freshStore = { draft: freshDraft, playerPool: [player] };
+currentLink = { __reactFiberForTest: { memoizedProps: { store: freshStore } } };
+intervals.at(-1)();
+if (snapshots.at(-1)?.overall_pick !== 10) {
+  throw new Error("The observer reused a stale React store after ESPN advanced the draft");
+}
+currentLink = { __reactFiberForTest: { memoizedProps: { store } } };
 vm.runInNewContext(
   fs.readFileSync("browser-companion/page-observer.js", "utf8"),
   context

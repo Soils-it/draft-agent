@@ -9,32 +9,36 @@
   const CONTENT_SOURCE = "ESPN_DRAFT_AGENT_CONTENT";
   let cachedStore = null;
 
-  function storeFromElement(element) {
-    if (!element) return null;
+  function storesFromElement(element) {
+    if (!element) return [];
     const reactKey = Object.keys(element).find((key) =>
       key.startsWith("__reactInternalInstance") || key.startsWith("__reactFiber")
     );
-    let fiber = reactKey ? element[reactKey] : null;
-    while (fiber && !fiber.memoizedProps?.store) fiber = fiber.return;
-    const store = fiber?.memoizedProps?.store;
-    return store?.draft && store?.playerPool ? store : null;
+    const roots = reactKey ? [element[reactKey], element[reactKey]?.alternate] : [];
+    const stores = [];
+    for (const root of roots.filter(Boolean)) {
+      let fiber = root;
+      while (fiber && !fiber.memoizedProps?.store) fiber = fiber.return;
+      const store = fiber?.memoizedProps?.store;
+      if (store?.draft && store?.playerPool) stores.push(store);
+    }
+    return stores;
   }
 
   function findDraftStore() {
-    if (cachedStore?.draft && cachedStore?.playerPool) return cachedStore;
     const preferred = document.querySelector("a.player-news");
     const candidates = [
       preferred,
       ...Array.from(document.querySelectorAll("[class*='player'], [data-testid], button, a"))
     ];
+    const stores = cachedStore?.draft && cachedStore?.playerPool ? [cachedStore] : [];
     for (const element of new Set(candidates.filter(Boolean))) {
-      const store = storeFromElement(element);
-      if (store) {
-        cachedStore = store;
-        return store;
-      }
+      stores.push(...storesFromElement(element));
     }
-    return null;
+    cachedStore = stores.sort(
+      (left, right) => Number(right.draft?.pickIndex ?? -1) - Number(left.draft?.pickIndex ?? -1)
+    )[0] || null;
+    return cachedStore;
   }
 
   function uniqueIds(players) {
