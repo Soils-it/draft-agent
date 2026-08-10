@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  if (window.__ESPN_DRAFT_AGENT_PAGE_ACTIVE__) return;
+  window.__ESPN_DRAFT_AGENT_PAGE_ACTIVE__ = true;
+
   const PAGE_SOURCE = "ESPN_DRAFT_AGENT_PAGE";
   const CONTENT_SOURCE = "ESPN_DRAFT_AGENT_CONTENT";
   let cachedStore = null;

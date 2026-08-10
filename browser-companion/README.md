@@ -30,6 +30,10 @@ currently on the clock.
 6. To test automatic drafting, separately enable **automatic picks in mock
    drafts**. Leave it off for observation-only use.
 
+**Save and sync** reinjects the current unpacked scripts into the active ESPN
+tab. This makes extension reloads reliable without depending on whether Chrome
+kept older content scripts attached to an already-open draft page.
+
 The controller waits for the configured override period. A manual ESPN pick
 during that window makes its command stale and therefore harmless. Immediately
 before sending, it checks mock status, league ID, overall pick, turn ownership,

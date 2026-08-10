@@ -18,6 +18,16 @@ document.querySelector("#save").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) {
     try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["page-observer.js"],
+        world: "MAIN"
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+        world: "ISOLATED"
+      });
       await chrome.tabs.sendMessage(tab.id, { type: "DRAFT_AGENT_SYNC" });
     } catch (_error) {
       await chrome.storage.local.set({
