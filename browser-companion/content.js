@@ -2,10 +2,8 @@
   "use strict";
 
   const LOCAL_ENDPOINT = "http://127.0.0.1:8765/api/espn/snapshot";
-  const SNAPSHOT_EVENT = "ESPN_DRAFT_AGENT_SNAPSHOT";
-  const REQUEST_EVENT = "ESPN_DRAFT_AGENT_REQUEST";
-  const COMMAND_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK";
-  const RESULT_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK_RESULT";
+  const PAGE_SOURCE = "ESPN_DRAFT_AGENT_PAGE";
+  const CONTENT_SOURCE = "ESPN_DRAFT_AGENT_CONTENT";
   const attemptedPicks = new Set();
   let pendingTimer = null;
   let pendingPickKey = null;
@@ -58,35 +56,38 @@
       attemptedPicks.add(pickKey);
       pendingTimer = null;
       pendingPickKey = null;
-      window.dispatchEvent(new CustomEvent(COMMAND_EVENT, {
-        detail: {
+      window.postMessage({
+        source: CONTENT_SOURCE,
+        type: "MOCK_PICK",
+        command: {
           mock_only: true,
           league_id: snapshot.league_id,
           overall_pick: snapshot.overall_pick,
           player_id: recommendation
         }
-      }));
+      }, "*");
     }, delay);
   }
 
-  window.addEventListener(RESULT_EVENT, (event) => {
-    const result = event.detail;
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.data?.source !== PAGE_SOURCE) return;
+    if (event.data.type === "SNAPSHOT") {
+      const snapshot = event.data.snapshot;
+      if (snapshot && Array.isArray(snapshot.available_player_ids)) sync(snapshot);
+      return;
+    }
+    if (event.data.type !== "MOCK_PICK_RESULT") return;
+    const result = event.data.result;
     if (!result) return;
     saveStatus({ ok: result.ok === true, message: String(result.message || "Mock selection finished.") });
   });
 
-  window.addEventListener(SNAPSHOT_EVENT, (event) => {
-    const snapshot = event.detail;
-    if (!snapshot || !Array.isArray(snapshot.available_player_ids)) return;
-    sync(snapshot);
-  });
-
   chrome.runtime.onMessage.addListener((message, _sender, respond) => {
     if (message?.type !== "DRAFT_AGENT_SYNC") return false;
-    window.dispatchEvent(new CustomEvent(REQUEST_EVENT));
+    window.postMessage({ source: CONTENT_SOURCE, type: "REQUEST_SNAPSHOT" }, "*");
     respond({ ok: true });
     return false;
   });
 
-  window.dispatchEvent(new CustomEvent(REQUEST_EVENT));
+  window.postMessage({ source: CONTENT_SOURCE, type: "REQUEST_SNAPSHOT" }, "*");
 })();

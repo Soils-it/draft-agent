@@ -1,21 +1,36 @@
 (() => {
   "use strict";
 
-  const SNAPSHOT_EVENT = "ESPN_DRAFT_AGENT_SNAPSHOT";
-  const REQUEST_EVENT = "ESPN_DRAFT_AGENT_REQUEST";
-  const COMMAND_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK";
-  const RESULT_EVENT = "ESPN_DRAFT_AGENT_MOCK_PICK_RESULT";
+  const PAGE_SOURCE = "ESPN_DRAFT_AGENT_PAGE";
+  const CONTENT_SOURCE = "ESPN_DRAFT_AGENT_CONTENT";
+  let cachedStore = null;
 
-  function findDraftStore() {
-    const playerLink = document.querySelector("a.player-news");
-    if (!playerLink) return null;
-    const reactKey = Object.keys(playerLink).find((key) =>
+  function storeFromElement(element) {
+    if (!element) return null;
+    const reactKey = Object.keys(element).find((key) =>
       key.startsWith("__reactInternalInstance") || key.startsWith("__reactFiber")
     );
-    let fiber = reactKey ? playerLink[reactKey] : null;
+    let fiber = reactKey ? element[reactKey] : null;
     while (fiber && !fiber.memoizedProps?.store) fiber = fiber.return;
     const store = fiber?.memoizedProps?.store;
     return store?.draft && store?.playerPool ? store : null;
+  }
+
+  function findDraftStore() {
+    if (cachedStore?.draft && cachedStore?.playerPool) return cachedStore;
+    const preferred = document.querySelector("a.player-news");
+    const candidates = [
+      preferred,
+      ...Array.from(document.querySelectorAll("[class*='player'], [data-testid], button, a"))
+    ];
+    for (const element of new Set(candidates.filter(Boolean))) {
+      const store = storeFromElement(element);
+      if (store) {
+        cachedStore = store;
+        return store;
+      }
+    }
+    return null;
   }
 
   function uniqueIds(players) {
@@ -85,16 +100,15 @@
   function emitSnapshot() {
     const snapshot = buildSnapshot();
     if (snapshot) {
-      window.dispatchEvent(new CustomEvent(SNAPSHOT_EVENT, { detail: snapshot }));
+      window.postMessage({ source: PAGE_SOURCE, type: "SNAPSHOT", snapshot }, "*");
     }
   }
 
   function emitResult(detail) {
-    window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail }));
+    window.postMessage({ source: PAGE_SOURCE, type: "MOCK_PICK_RESULT", result: detail }, "*");
   }
 
-  function executeMockPick(event) {
-    const command = event.detail;
+  function executeMockPick(command) {
     const store = findDraftStore();
     const draft = store?.draft;
     const fail = (message) => emitResult({ ok: false, message });
@@ -129,8 +143,11 @@
     });
   }
 
-  window.addEventListener(REQUEST_EVENT, emitSnapshot);
-  window.addEventListener(COMMAND_EVENT, executeMockPick);
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.data?.source !== CONTENT_SOURCE) return;
+    if (event.data.type === "REQUEST_SNAPSHOT") emitSnapshot();
+    if (event.data.type === "MOCK_PICK") executeMockPick(event.data.command);
+  });
   setInterval(emitSnapshot, 2000);
   emitSnapshot();
 })();

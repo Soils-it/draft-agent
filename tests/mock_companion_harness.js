@@ -40,11 +40,17 @@ const window = {
   dispatchEvent(event) {
     if (event.type === "ESPN_DRAFT_AGENT_MOCK_PICK_RESULT") results.push(event.detail);
     listeners.get(event.type)?.(event);
+  },
+  postMessage(data) {
+    if (data?.source === "ESPN_DRAFT_AGENT_PAGE" && data.type === "MOCK_PICK_RESULT") {
+      results.push(data.result);
+    }
+    listeners.get("message")?.({ source: window, data });
   }
 };
 const context = {
   window,
-  document: { querySelector: () => link },
+  document: { querySelector: () => link, querySelectorAll: () => [] },
   CustomEvent,
   setInterval: () => 0,
   console
@@ -55,15 +61,17 @@ vm.runInNewContext(
 );
 
 function command(overrides = {}) {
-  window.dispatchEvent(new CustomEvent("ESPN_DRAFT_AGENT_MOCK_PICK", {
-    detail: {
+  window.postMessage({
+    source: "ESPN_DRAFT_AGENT_CONTENT",
+    type: "MOCK_PICK",
+    command: {
       mock_only: true,
       league_id: "MOCK-LEAGUE",
       overall_pick: 6,
       player_id: "42",
       ...overrides
     }
-  }));
+  });
 }
 
 command();
