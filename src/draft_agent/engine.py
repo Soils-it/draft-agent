@@ -26,6 +26,7 @@ class StrategyWeights:
     roster_need: float = 0.16
     position_value: float = 0.16
     lineup_quality: float = 0.18
+    bench_opportunity_cost: float = 0.18
     rb_anchor: float = 0.30
     gone_next_pick: float = 0.06
     availability: float = 0.10
@@ -190,7 +191,21 @@ class DraftEngine:
         incumbent = min(incumbents, key=self._market_rank)
         incumbent_market_rank = self._market_rank(incumbent)
         if position == "TE":
-            return incumbent_market_rank <= self.strong_starter_market[position]
+            incumbent_points = projected_points(incumbent)
+            candidate_points = projected_points(player)
+            starter_is_injured = self._availability(incumbent) < 0.86
+            material_upgrade = (
+                self._market_rank(player) <= incumbent_market_rank - 12
+                or (
+                    incumbent_points > 0
+                    and candidate_points >= incumbent_points * 1.10
+                )
+            )
+            if starter_is_injured:
+                return False
+            if incumbent_market_rank <= self.strong_starter_market[position]:
+                return True
+            return not material_upgrade
 
         # In a 1-QB league, a healthy top-90 overall starter makes QB2 an
         # inefficient bench use unless the candidate is a real upgrade. A weak
@@ -255,6 +270,41 @@ class DraftEngine:
             ratio = min(candidate_points / max(incumbent_points, 1.0), 1.0)
             return max(0.05, ratio * (0.2 + 0.45 * weakness))
         return 0.05
+
+    def _bench_opportunity_cost(
+        self,
+        player: Player,
+        roster: list[Player],
+        round_number: int,
+        current_pick: int,
+        next_pick: int,
+    ) -> float:
+        """Price the last deep bench slot against needs before the next turn.
+
+        The next-pick distance makes this work for every snake slot: the second
+        pick at either end of the board carries more pressure than the first,
+        while middle slots receive a moderate adjustment.
+        """
+        counts = Counter(item.position for item in roster)
+        depth_threshold = {"RB": 4, "WR": 6}
+        threshold = depth_threshold.get(player.position)
+        if threshold is None or counts[player.position] < threshold:
+            return 0.0
+
+        maximum_wait = max(2 * self.config.teams - 2, 1)
+        opponents_before_next = max(next_pick - current_pick - 1, 0)
+        wait_pressure = min(opponents_before_next / maximum_wait, 1.0)
+        core_open = any(
+            counts[position] < self.config.starters[position]
+            for position in ("QB", "RB", "WR", "TE")
+        )
+        late_pressure = min(max((round_number - 7) / 6, 0.0), 1.0)
+        return min(
+            1.0,
+            0.45
+            + 0.35 * wait_pressure
+            + (0.20 * late_pressure if core_open else 0.0),
+        )
 
     def _roster_need(
         self,
@@ -474,7 +524,9 @@ class DraftEngine:
             if self._roster_need(player, roster, round_number, current_pick) >= 0
             and self._name_key(player.name) not in self.never_names
         ]
-        exposure_rates = exposure_rates or {}
+        # Zero explicitly means "off": prior mock results must not influence a
+        # best-player draft unless the user configures an exposure percentage.
+        exposure_rates = (exposure_rates or {}) if exposure_limit > 0 else {}
         if exposure_limit > 0:
             under_limit = [
                 player
@@ -603,6 +655,13 @@ class DraftEngine:
             roster_need = self._roster_need(player, roster, round_number, current_pick)
             position_value = self._position_value(player, roster, round_number)
             lineup_quality = self._lineup_quality(player, roster)
+            bench_opportunity_cost = self._bench_opportunity_cost(
+                player,
+                roster,
+                round_number,
+                current_pick,
+                next_pick,
+            )
             rb_anchor = self._rb_anchor(player, roster, round_number, current_pick)
             preference = self._preference(player)
             te_urgency = self._te_urgency(
@@ -629,6 +688,7 @@ class DraftEngine:
                 "roster_need": roster_need,
                 "position_value": position_value,
                 "lineup_quality": lineup_quality,
+                "bench_opportunity_cost": bench_opportunity_cost,
                 "rb_anchor": rb_anchor,
                 "gone_next_pick": gone,
                 "availability": availability,
@@ -645,6 +705,7 @@ class DraftEngine:
                 "market_dominance",
                 "reach_penalty",
                 "exposure_penalty",
+                "bench_opportunity_cost",
                 "portfolio_concentration",
                 "risk",
             }

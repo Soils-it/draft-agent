@@ -447,6 +447,22 @@ class EngineTests(unittest.TestCase):
         )
         self.assertEqual([item["id"] for item in exposure_ranked], ["two"])
 
+        disabled_exposure = engine.rank(
+            players,
+            [],
+            6,
+            19,
+            exposure_rates={"1": 1.0, "2": 0.0},
+            exposure_limit=0,
+        )
+        self.assertEqual(disabled_exposure[0]["id"], "one")
+        self.assertTrue(
+            all(
+                item["components"]["exposure_penalty"] == 0
+                for item in disabled_exposure
+            )
+        )
+
     def test_third_early_wr_is_blocked_before_first_rb(self):
         engine = DraftEngine(self.config, simulation_samples=50)
         roster = [
@@ -594,6 +610,51 @@ class EngineTests(unittest.TestCase):
         )
         self.assertFalse(engine._starter_blocks_backup(projected_upgrade, [healthy]))
 
+    def test_late_te2_requires_an_injury_or_material_upgrade(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        juwan = Player(
+            "juwan",
+            "Juwan Johnson",
+            "NO",
+            "TE",
+            148,
+            projected_points_override=143,
+            signals={"consensus_rank": 148.3},
+        )
+        chig = Player(
+            "chig",
+            "Chig Okonkwo",
+            "WAS",
+            "TE",
+            152,
+            projected_points_override=121,
+            signals={"consensus_rank": 151.7},
+        )
+        self.assertTrue(engine._starter_blocks_backup(chig, [juwan]))
+        self.assertFalse(engine._starter_blocks_backup(juwan, [chig]))
+
+        core = [
+            juwan,
+            Player("qb", "QB One", "AAA", "QB", 50),
+            Player("rb1", "RB One", "BBB", "RB", 20),
+            Player("rb2", "RB Two", "CCC", "RB", 30),
+            Player("wr1", "WR One", "DDD", "WR", 15),
+            Player("wr2", "WR Two", "EEE", "WR", 25),
+        ]
+        bench_wr = Player(
+            "bench-wr",
+            "Bench WR",
+            "FFF",
+            "WR",
+            165,
+            projected_points_override=150,
+            signals={"consensus_rank": 165},
+        )
+        ranked_ids = {
+            item["id"] for item in engine.rank([chig, bench_wr], core, 163, 174)
+        }
+        self.assertEqual(ranked_ids, {"bench-wr"})
+
     def test_elite_qb_and_te_starters_block_redundant_backups(self):
         roster = [
             Player(
@@ -736,6 +797,44 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(engine._lineup_quality(upgrade, roster), 1.0)
         self.assertLess(engine._lineup_quality(depth, roster), 1.0)
 
+    def test_next_pick_distance_penalizes_rb5_before_open_starters(self):
+        engine = DraftEngine(self.config, simulation_samples=50)
+        roster = [
+            Player("qb", "QB One", "AAA", "QB", 50),
+            Player("rb1", "RB One", "BBB", "RB", 20),
+            Player("rb2", "RB Two", "CCC", "RB", 30),
+            Player("rb3", "RB Three", "DDD", "RB", 60),
+            Player("rb4", "RB Four", "EEE", "RB", 80),
+            Player("wr1", "WR One", "FFF", "WR", 15),
+            Player("wr2", "WR Two", "GGG", "WR", 25),
+            Player("wr3", "WR Three", "HHH", "WR", 70),
+            Player("wr4", "WR Four", "III", "WR", 90),
+        ]
+        rb5 = Player(
+            "rb5", "RB Five", "JJJ", "RB", 100,
+            projected_points_override=180,
+            signals={"consensus_rank": 100},
+        )
+        wr5 = Player(
+            "wr5", "WR Five", "KKK", "WR", 100,
+            projected_points_override=180,
+            signals={"consensus_rank": 100},
+        )
+        short_wait = engine._bench_opportunity_cost(rb5, roster, 10, 108, 109)
+        long_wait = engine._bench_opportunity_cost(rb5, roster, 10, 109, 132)
+        self.assertGreater(long_wait, short_wait)
+
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"bench_opportunity_cost": 1})
+        ranked = engine.rank([rb5, wr5], roster, 109, 132)
+        self.assertEqual(ranked[0]["id"], "wr5")
+        self.assertLess(
+            next(item for item in ranked if item["id"] == "rb5")[
+                "contributions"
+            ]["bench_opportunity_cost"],
+            0,
+        )
+
     def test_market_guardrail_blocks_large_reach_and_has_safe_fallback(self):
         engine = DraftEngine(self.config, simulation_samples=50)
         sensible = Player(
@@ -861,14 +960,50 @@ class EngineTests(unittest.TestCase):
             "wr2",
         )
 
-    def test_full_mock_draft_builds_legal_roster(self):
-        session = DraftSession(self.players, self.config)
-        while not session.is_complete:
-            session.make_user_pick(str(session.recommendations()[0]["id"]), "test")
-        roster = session.user_roster()
-        self.assertEqual(len(roster), self.config.roster_size)
-        for position, cap in self.config.position_caps.items():
-            self.assertLessEqual(sum(player.position == position for player in roster), cap)
+    def test_full_mock_draft_builds_legal_roster_from_every_slot(self):
+        for slot in range(1, self.config.teams + 1):
+            with self.subTest(slot=slot):
+                config = LeagueConfig(user_slot=slot)
+                session = DraftSession(self.players, config)
+                session.engine.simulation_samples = 20
+                while not session.is_complete:
+                    recommendations = session.recommendations()
+                    self.assertTrue(recommendations)
+                    session.make_user_pick(str(recommendations[0]["id"]), "test")
+                roster = session.user_roster()
+                self.assertEqual(len(roster), config.roster_size)
+                for position, cap in config.position_caps.items():
+                    self.assertLessEqual(
+                        sum(player.position == position for player in roster),
+                        cap,
+                    )
+                for position in ("QB", "TE", "K", "DST"):
+                    self.assertGreaterEqual(
+                        sum(player.position == position for player in roster),
+                        1,
+                    )
+                for position in ("RB", "WR"):
+                    self.assertGreaterEqual(
+                        sum(player.position == position for player in roster),
+                        2,
+                    )
+                expected_balance = {
+                    "QB": 1,
+                    "RB": 5,
+                    "WR": 7,
+                    "TE": 1,
+                    "K": 1,
+                    "DST": 1,
+                }
+                self.assertEqual(
+                    {
+                        position: sum(
+                            player.position == position for player in roster
+                        )
+                        for position in expected_balance
+                    },
+                    expected_balance,
+                )
 
     def test_runtime_settings_validation(self):
         self.assertEqual(validate_settings({"user_slot": 12, "override_seconds": 30}, 6, 20, 12), (12, 30, 200))
@@ -911,6 +1046,8 @@ class EngineTests(unittest.TestCase):
         self.assertIn("simulation", first[0]["components"])
         self.assertIn("lineup_quality", first[0]["components"])
         self.assertIn("lineup_quality", first[0]["contributions"])
+        self.assertIn("bench_opportunity_cost", first[0]["components"])
+        self.assertIn("bench_opportunity_cost", first[0]["contributions"])
         self.assertIn("portfolio_concentration", first[0]["components"])
         self.assertIn("portfolio_concentration", first[0]["contributions"])
         self.assertAlmostEqual(

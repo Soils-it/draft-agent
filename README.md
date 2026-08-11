@@ -106,6 +106,7 @@ Each available player receives normalized component scores for:
 - positional scarcity and nearby tier drop
 - roster need
 - starting-lineup improvement and incumbent quality at every position
+- deep-bench opportunity cost based on the actual wait until the next pick
 - likelihood the player is gone before the next selection
 - injury/availability, bye-week fit, nonlinear NFL-team/bye concentration, and
   Sleeper add/drop trends
@@ -139,10 +140,11 @@ round 12 and then requires that backup to have fallen at least 20 picks below
 consensus. A healthy top-90 overall incumbent QB suppresses QB2 unless the
 candidate is at least 15 market spots better or projects at least 5% higher. A
 weak or questionable/out starter can still unlock late QB insurance. A top-60
-incumbent TE suppresses TE2, unless the user explicitly prefers the candidate.
-RB and WR depth is evaluated by whether the candidate improves the actual
-2RB/2WR/FLEX lineup; non-starting depth receives diminishing value as the room
-fills. First
+incumbent TE suppresses TE2. A later TE2 must be a meaningful market or
+projection upgrade over a non-elite incumbent, cover an injury, or be
+explicitly preferred by the user. RB and WR depth is evaluated by whether the
+candidate improves the actual 2RB/2WR/FLEX lineup; non-starting depth receives
+diminishing value as the room fills. First
 K and D/ST selections receive the same lineup-quality accounting, while their
 position caps prevent redundant specialists. The opening remains value-based
 between RB and WR, including an elite first-round WR. After a first-round WR, a
@@ -161,6 +163,12 @@ second player from the same NFL team or bye week is a small tiebreaker; adding a
 third receives a much larger penalty. It diversifies close decisions without
 overriding a clearly superior second player.
 
+Roster depth also uses the real distance to the next selection. Adding RB5 or
+WR7 receives a larger opportunity-cost penalty before a long wait—especially
+while a core starter remains empty—and a smaller penalty before an adjacent
+turn pick. This calculation uses snake-order distance, so it applies uniformly
+to slots 1 through 12 rather than encoding a preferred draft position.
+
 Every ESPN decision is also written to the ignored local file
 `.cache/draft_decisions.json`. Each record retains the roster and active rules,
 top five overall candidates, best eligible candidate or blocking status for
@@ -178,7 +186,8 @@ to represent the user's player evaluation; never-draft entries are removed
 from consideration. An optional exposure percentage applies only to ESPN mock
 drafts and avoids players already selected at or above that rate across prior
 mocks observed during the current server run. Keep exposure at 0% for the real
-draft or when repeated best-value selections are desired. Player preferences
+draft or when repeated best-value selections are desired; at 0%, both the hard
+exposure filter and the soft exposure score are disabled. Player preferences
 are persisted locally under the ignored `.cache/` directory; exposure history
 resets with the Python server.
 
