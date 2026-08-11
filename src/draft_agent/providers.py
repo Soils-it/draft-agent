@@ -21,6 +21,7 @@ NFLVERSE_URL = (
 NFLVERSE_PLAYERS_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
 )
+NFLVERSE_CACHE_LIMIT = 15_000_000
 
 
 @dataclass(frozen=True)
@@ -144,7 +145,10 @@ class NflverseProvider:
     def _load_url(self, url: str, cache_file: Path, refresh: bool) -> tuple[str, bool]:
         cached = cache_file.exists() and not refresh
         if cached:
-            content = cache_file.read_text(encoding="utf-8")
+            try:
+                content = self._read_cached(cache_file)
+            except OSError as exc:
+                raise ValueError("could not read cached nflverse data") from exc
         else:
             request = urllib.request.Request(
                 url,
@@ -152,36 +156,96 @@ class NflverseProvider:
             )
             try:
                 with urllib.request.urlopen(request, timeout=20) as response:
-                    if int(response.headers.get("Content-Length", "0")) > 15_000_000:
+                    if int(response.headers.get("Content-Length", "0")) > NFLVERSE_CACHE_LIMIT:
                         raise ValueError("nflverse response exceeded the 15 MB safety limit")
-                    payload = response.read(15_000_001)
+                    payload = response.read(NFLVERSE_CACHE_LIMIT + 1)
             except (OSError, urllib.error.URLError) as exc:
                 raise ValueError(f"could not load nflverse data: {exc}") from exc
-            if len(payload) > 15_000_000:
+            if len(payload) > NFLVERSE_CACHE_LIMIT:
                 raise ValueError("nflverse response exceeded the 15 MB safety limit")
             content = payload.decode("utf-8-sig")
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(content, encoding="utf-8")
         return content, cached
 
-    def load(self, season: int, refresh: bool = False) -> ProviderResult:
-        stats_content, stats_cached = self._load_url(
-            NFLVERSE_URL.format(season=season),
-            self.cache_dir / f"stats_player_reg_{season}.csv",
-            refresh,
-        )
-        players_content, players_cached = self._load_url(
-            NFLVERSE_PLAYERS_URL,
-            self.cache_dir / "players.csv",
-            refresh,
-        )
+    @staticmethod
+    def _fetched_at(paths: list[Path]) -> str:
+        oldest = min(path.stat().st_mtime for path in paths)
+        return datetime.fromtimestamp(oldest, timezone.utc).isoformat()
+
+    @staticmethod
+    def _read_cached(path: Path) -> str:
+        if path.stat().st_size > NFLVERSE_CACHE_LIMIT:
+            raise ValueError("cached nflverse data exceeded the 15 MB safety limit")
+        return path.read_text(encoding="utf-8")
+
+    def _result(
+        self,
+        stats_content: str,
+        players_content: str,
+        season: int,
+        cached: bool,
+        paths: list[Path],
+    ) -> ProviderResult:
         espn_ids = espn_ids_from_players_csv(players_content)
         players = players_from_nflverse_csv(stats_content, season, espn_ids)
         return ProviderResult(
             players=players,
             source="nflverse historical baseline",
             season=season,
-            fetched_at=datetime.now(timezone.utc).isoformat(),
-            cached=stats_cached and players_cached,
+            fetched_at=self._fetched_at(paths),
+            cached=cached,
             mapped_espn_ids=sum(bool(player.external_ids.get("espn")) for player in players),
+        )
+
+    def load_cached(self, season: int | None = None) -> ProviderResult | None:
+        """Restore a complete validated cache without ever attempting the network."""
+        players_path = self.cache_dir / "players.csv"
+        if not players_path.is_file():
+            return None
+        if season is None:
+            seasons = []
+            for path in self.cache_dir.glob("stats_player_reg_*.csv"):
+                try:
+                    candidate = int(path.stem.removeprefix("stats_player_reg_"))
+                except ValueError:
+                    continue
+                if 1999 <= candidate <= datetime.now(timezone.utc).year:
+                    seasons.append(candidate)
+            if not seasons:
+                return None
+            season = max(seasons)
+        if not 1999 <= season <= datetime.now(timezone.utc).year:
+            raise ValueError("cached nflverse season is outside the supported range")
+        stats_path = self.cache_dir / f"stats_player_reg_{season}.csv"
+        if not stats_path.is_file():
+            return None
+        paths = [stats_path, players_path]
+        return self._result(
+            self._read_cached(stats_path),
+            self._read_cached(players_path),
+            season,
+            True,
+            paths,
+        )
+
+    def load(self, season: int, refresh: bool = False) -> ProviderResult:
+        stats_path = self.cache_dir / f"stats_player_reg_{season}.csv"
+        players_path = self.cache_dir / "players.csv"
+        stats_content, stats_cached = self._load_url(
+            NFLVERSE_URL.format(season=season),
+            stats_path,
+            refresh,
+        )
+        players_content, players_cached = self._load_url(
+            NFLVERSE_PLAYERS_URL,
+            players_path,
+            refresh,
+        )
+        return self._result(
+            stats_content,
+            players_content,
+            season,
+            stats_cached and players_cached,
+            [stats_path, players_path],
         )

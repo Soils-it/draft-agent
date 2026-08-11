@@ -54,3 +54,31 @@ The controller waits for the configured override period. A manual ESPN pick
 during that window makes its command stale and therefore harmless. Immediately
 before sending, it checks mock status, league ID, overall pick, turn ownership,
 and player availability. Real-draft selection is intentionally blocked.
+
+## READY / NOT READY
+
+The local server is the readiness authority. The companion can arm a mock pick
+only when the snapshot response says **READY**. Readiness combines the expected
+snake-order roster count, retention of previously confirmed selections, ESPN
+catalog and roster mapping, nflverse historical coverage, current-signal
+coverage and age, and snapshot freshness. A NOT READY response contains the
+reason, produces no pending player ID, and is shown in the extension status and
+dashboard. Use the dashboard source timestamps and reasons to decide whether to
+wait for the next two-second snapshot, click **Save and sync**, or reload the
+complete free-data cache.
+
+The Python server restores only a complete validated nflverse/signals cache at
+startup and does so without network access. Missing or invalid cache files leave
+the bridge NOT READY instead of silently substituting demo players under a full-
+data label. Current signals expire after 48 hours.
+
+If the page controller rejects a mock command because the pick is stale or the
+player is unavailable, the background worker requests exactly one fresh
+snapshot. A valid fresh response starts one new override timer (five seconds is
+still supported); a second rejection is terminal for that pick, preventing a
+retry loop or duplicate submission.
+
+Real drafts are manual-only. Leave **automatic picks in mock drafts** disabled,
+confirm READY, and click the recommended player yourself in ESPN. The
+page-context controller checks `isMockLeague === true` immediately before every
+send, so neither READY nor the popup setting enables real-league submission.

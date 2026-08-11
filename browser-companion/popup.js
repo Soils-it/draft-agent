@@ -5,8 +5,11 @@ async function render() {
   document.querySelector("#enabled").checked = settings.enabled;
   document.querySelector("#autoPickMocks").checked = settings.autoPickMocks;
   const status = settings.draftAgentLastStatus;
+  const statusLabel = status?.message?.startsWith("NOT READY")
+    ? "Not ready"
+    : (status?.ok ? "Connected" : "Not connected");
   document.querySelector("#status").textContent = status
-    ? `${status.ok ? "Connected" : "Not connected"}: ${status.message}\n${status.at}`
+    ? `${statusLabel}: ${status.message}\n${status.at}`
     : "No snapshot sent yet.";
 }
 

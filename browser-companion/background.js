@@ -49,11 +49,14 @@ async function handleSnapshot(snapshot, tabId) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Local bridge rejected the snapshot");
+    const ready = result?.espn?.readiness?.ready === true;
     await saveStatus({
-      ok: true,
-      message: settings.autoPickMocks
-        ? "Projection snapshot accepted; mock auto-pick is armed."
-        : "Projection snapshot accepted; mock auto-pick is off.",
+      ok: ready,
+      message: ready
+        ? (settings.autoPickMocks
+          ? "READY: snapshot accepted; mock auto-pick is armed."
+          : "READY: snapshot accepted; mock auto-pick is off.")
+        : `NOT READY: ${result?.espn?.readiness?.reasons?.[0] || "local data checks failed."}`,
       overallPick: snapshot.overall_pick,
       matchRate: result.espn.match_rate
     });
@@ -87,12 +90,27 @@ async function considerMockPick(snapshot, result, enabled, tabId) {
   const recommendation = result?.espn?.pending_espn_player_id;
   const pickKey = `${snapshot.league_id}:${snapshot.overall_pick}`;
   const current = activePicks.get(tabId);
-  if (!enabled || result?.espn?.on_clock !== true || !recommendation) {
+  if (!enabled || result?.espn?.on_clock !== true) {
     activePicks.delete(tabId);
     return;
   }
+  if (result?.espn?.readiness?.ready !== true || !recommendation) return;
   if (!current || current.key !== pickKey) {
-    activePicks.set(tabId, { key: pickKey, startedAt: Date.now(), attempted: false });
+    activePicks.set(tabId, {
+      key: pickKey,
+      startedAt: Date.now(),
+      attempted: false,
+      recoveryCount: 0,
+      awaitingFreshSnapshot: false,
+      recommendation
+    });
+    return;
+  }
+  current.recommendation = recommendation;
+  if (current.awaitingFreshSnapshot) {
+    current.awaitingFreshSnapshot = false;
+    current.attempted = false;
+    current.startedAt = Date.now();
     return;
   }
   const delay = Math.max(5, Number(result?.settings?.override_seconds) || 20) * 1000;
@@ -107,6 +125,38 @@ async function considerMockPick(snapshot, result, enabled, tabId) {
       player_id: recommendation
     }
   });
+}
+
+function isRecoverablePickFailure(result) {
+  const message = String(result?.message || "").toLowerCase();
+  return message.includes("stale") || message.includes("unavailable");
+}
+
+async function handlePickResult(result, tabId) {
+  if (result?.ok === true) {
+    await recordPickResult(result);
+    await saveStatus({ ok: true, message: String(result.message || "Mock selection finished.") });
+    return;
+  }
+  const current = tabId ? activePicks.get(tabId) : null;
+  const resultKey = `${result?.league_id || result?.draft_id || ""}:${result?.overall_pick || ""}`;
+  if (
+    current &&
+    current.key === resultKey &&
+    current.attempted &&
+    current.recoveryCount < 1 &&
+    isRecoverablePickFailure(result)
+  ) {
+    current.recoveryCount += 1;
+    current.awaitingFreshSnapshot = true;
+    await saveStatus({
+      ok: false,
+      message: `${String(result.message || "Mock selection was rejected")} Requesting one fresh snapshot.`
+    });
+    await chrome.tabs.sendMessage(tabId, { type: "DRAFT_AGENT_SYNC" });
+    return;
+  }
+  await saveStatus({ ok: false, message: String(result?.message || "Mock selection failed.") });
 }
 
 async function recordPickResult(result) {
@@ -128,15 +178,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return true;
   }
   if (message?.type === "DRAFT_AGENT_PICK_RESULT") {
-    const result = message.result;
-    void recordPickResult(result).catch((error) => saveStatus({
+    void handlePickResult(message.result, sender.tab?.id).catch((error) => saveStatus({
       ok: false,
-      message: `Mock pick sent, but decision logging failed: ${String(error?.message || error)}`
+      message: `Mock pick result handling failed: ${String(error?.message || error)}`
     }));
-    void saveStatus({
-      ok: result?.ok === true,
-      message: String(result?.message || "Mock selection finished.")
-    });
   }
   return false;
 });

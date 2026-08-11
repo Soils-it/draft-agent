@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from draft_agent.config import LeagueConfig
 from draft_agent.data import demo_players
@@ -225,6 +226,56 @@ class EngineTests(unittest.TestCase):
             higgins_result["contributions"]["portfolio_concentration"],
             0,
         )
+
+    def test_close_early_rb_tie_avoids_a_second_same_team_backfield(self):
+        engine = DraftEngine(self.config, simulation_samples=20)
+        roster = [
+            Player("pit-one", "Pittsburgh RB One", "PIT", "RB", 20),
+            Player("other-rb", "Other RB", "ATL", "RB", 30),
+            Player("wr-one", "WR One", "DET", "WR", 15),
+            Player("wr-two", "WR Two", "DAL", "WR", 25),
+            Player("qb", "QB One", "BAL", "QB", 45),
+            Player("te", "TE One", "KC", "TE", 50),
+        ]
+        same_backfield = Player(
+            "same",
+            "Pittsburgh RB Two",
+            "PIT",
+            "RB",
+            72,
+            projected_points_override=190,
+            signals={"consensus_rank": 72},
+        )
+        independent = Player(
+            "independent",
+            "Independent RB",
+            "SEA",
+            "RB",
+            73,
+            projected_points_override=190,
+            signals={"consensus_rank": 73},
+        )
+        ranked = engine.rank([same_backfield, independent], roster, 73, 84)
+        self.assertEqual(ranked[0]["id"], "independent")
+        same_result = next(item for item in ranked if item["id"] == "same")
+        self.assertEqual(same_result["components"]["rb_backfield"], 1)
+        self.assertLess(same_result["contributions"]["rb_backfield"], 0)
+
+        material_value = replace(
+            same_backfield,
+            adp=60,
+            projected_points_override=220,
+            signals={"consensus_rank": 60},
+        )
+        self.assertEqual(
+            engine.rank([material_value, independent], roster, 73, 84)[0]["id"],
+            "same",
+        )
+
+        engine.set_preferences(prefer=[same_backfield.name])
+        preferred = engine.rank([same_backfield, independent], roster, 73, 84)
+        self.assertEqual(preferred[0]["id"], "same")
+        self.assertEqual(preferred[0]["components"]["rb_backfield"], 0)
 
     def test_one_qb_strategy_blocks_early_qbs_and_early_backup(self):
         elite_qb = Player("elite-qb", "Elite QB", "BUF", "QB", 20, projected_points_override=400)

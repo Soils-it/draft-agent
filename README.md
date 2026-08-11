@@ -31,6 +31,15 @@ be changed in Draft Settings. Opponent selections are simulated from ADP. Your
 recommended player is picked after a configurable countdown (20 seconds by
 default) unless you pause or choose an alternative.
 
+On startup the server restores a complete, validated nflverse and free-signal
+cache without making a network request. Cache file modification times are used
+as the source timestamps. A missing, partial, oversized, malformed, or stale
+cache is reported truthfully as **NOT READY**; generated demo players are never
+labeled as loaded historical data. Use **Load complete free data** to refresh a
+missing or stale cache. Applying draft settings or resetting the local mock now
+keeps the active player pool, ESPN IDs, historical baselines, current signals,
+preferences, and strategy weights.
+
 Use **Load complete free data** before opening a mock. The Player Data panel
 downloads the selected regular season from the
 [nflverse data releases](https://github.com/nflverse/nflverse-data/releases).
@@ -40,6 +49,28 @@ depth-chart, and 24-hour add/drop signals from the [Sleeper API](https://docs.sl
 All downloads are size-bounded and cached under ignored `.cache/` directories.
 No paid API key is required. ESPN's own projected points remain the primary
 live-draft projection after the companion connects.
+
+## Draft readiness
+
+The dashboard and `/api/state` expose one prominent **READY** or **NOT READY**
+result with actionable reasons and per-source freshness. A live snapshot is
+READY only when all of these checks pass:
+
+- snake order and the observed roster agree, including every selection already
+  confirmed during the active draft;
+- the ESPN catalog has at least 100 players, at least 80% of available players
+  map, and every roster player maps;
+- at least 50% of the current ESPN catalog has a historical baseline (rookies,
+  kickers, and D/ST may legitimately lack one);
+- at least 75% has current consensus/injury signals, the local signal cache has
+  adequate coverage, and those signals are no more than 48 hours old; and
+- the latest ESPN snapshot is no more than 10 seconds old.
+
+NOT READY is fail-closed: no pending player ID or mock command is produced.
+For example, slot 1 at pick 24 requires the pick-1 player to appear on the
+roster. An empty or regressed roster cannot re-offer that confirmed player.
+Wait for the next companion snapshot, use **Save and sync**, or refresh complete
+free data according to the displayed reason.
 
 ## ESPN bridge status
 
@@ -57,6 +88,15 @@ and can be armed separately in the companion. It waits for the configured
 override period and then revalidates the league, pick number, turn ownership,
 player availability, and ESPN mock status before sending exactly one pick.
 Real-league submission is hard-blocked in the page-context controller.
+
+If ESPN rejects a mock command as stale or unavailable, the companion requests
+one fresh snapshot and permits one new override-period arm; it never loops or
+submits twice from the same command.
+
+For a real draft, use the agent in shadow mode only: leave companion automatic
+picks disabled, read the READY recommendation, and make the selection manually
+in ESPN. The extension has no supported real-draft submission path, and enabling
+mock automation does not relax that boundary.
 
 `browser-companion/` contains the unpacked extension that sends snapshots and
 can submit the recommended player in ESPN mock drafts after the override timer.
@@ -162,6 +202,11 @@ The team/bye concentration component is deliberately nonlinear. Adding a
 second player from the same NFL team or bye week is a small tiebreaker; adding a
 third receives a much larger penalty. It diversifies close decisions without
 overriding a clearly superior second player.
+
+Before round 12, a separate narrow tiebreaker discourages adding a second RB
+from the same NFL backfield when an independently rostered RB is within five
+market spots and 5% of the projection. A materially better value or an explicit
+Prefer rule bypasses this penalty.
 
 Roster depth also uses the real distance to the next selection. Adding RB5 or
 WR7 receives a larger opportunity-cost penalty before a long wait—especially

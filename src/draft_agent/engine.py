@@ -32,6 +32,7 @@ class StrategyWeights:
     availability: float = 0.10
     bye_fit: float = 0.01
     portfolio_concentration: float = 0.08
+    rb_backfield: float = 0.18
     trend: float = 0.02
     rookie_camp_role: float = 0.03
     preference: float = 0.25
@@ -506,6 +507,51 @@ class DraftEngine:
         bye_penalty = severity(same_bye, bye_week=True)
         return 0.65 * team_penalty + 0.35 * bye_penalty
 
+    def _rb_backfield_penalty(
+        self,
+        player: Player,
+        roster: list[Player],
+        candidates: list[Player],
+        round_number: int,
+    ) -> float:
+        """Break close early RB ties away from a teammate's backfield.
+
+        The guard is deliberately narrow: it ends in round 12, applies only
+        when an RB from that NFL team is already rostered, and disappears for
+        an explicit Prefer or when no comparably valued independent RB exists.
+        """
+        team = player.team.strip().upper()
+        if (
+            round_number >= 12
+            or player.position != "RB"
+            or not team
+            or team == "FA"
+            or self._preference(player) > 0
+            or not any(
+                item.position == "RB" and item.team.strip().upper() == team
+                for item in roster
+            )
+        ):
+            return 0.0
+        rostered_rb_teams = {
+            item.team.strip().upper()
+            for item in roster
+            if item.position == "RB" and item.team.strip().upper() not in {"", "FA"}
+        }
+        player_rank = self._market_rank(player)
+        player_points = projected_points(player)
+        close_independent = any(
+            peer.position == "RB"
+            and peer.player_id != player.player_id
+            and peer.team.strip().upper() not in rostered_rb_teams
+            and abs(self._market_rank(peer) - player_rank) <= 5
+            and projected_points(peer) >= player_points * 0.95
+            and self._availability(peer) >= self._availability(player)
+            and self._preference(peer) >= 0
+            for peer in candidates
+        )
+        return 1.0 if close_independent else 0.0
+
     def rank(
         self,
         available: list[Player],
@@ -674,6 +720,9 @@ class DraftEngine:
             availability = self._availability(player)
             bye_fit = self._bye_fit(player, roster)
             portfolio_concentration = self._portfolio_concentration(player, roster)
+            rb_backfield = self._rb_backfield_penalty(
+                player, roster, eligible, round_number
+            )
             effective_risk = min(1.0, player.risk + (1 - availability) * 0.7 + uncertainty * 0.15)
             detail = {
                 "projection": components["projection"][player.player_id],
@@ -694,6 +743,7 @@ class DraftEngine:
                 "availability": availability,
                 "bye_fit": bye_fit,
                 "portfolio_concentration": portfolio_concentration,
+                "rb_backfield": rb_backfield,
                 "trend": components["trend"][player.player_id],
                 "rookie_camp_role": rookie_camp_role,
                 "preference": preference,
@@ -707,6 +757,7 @@ class DraftEngine:
                 "exposure_penalty",
                 "bench_opportunity_cost",
                 "portfolio_concentration",
+                "rb_backfield",
                 "risk",
             }
             contributions = {
