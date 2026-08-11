@@ -27,7 +27,11 @@ const context = {
         espn: {
           pending_espn_player_id: authoritativeOnClock ? "42" : null,
           match_rate: 1,
-          on_clock: authoritativeOnClock
+          on_clock: authoritativeOnClock,
+          readiness: {
+            ready: authoritativeOnClock,
+            reasons: authoritativeOnClock ? [] : ["Not on the authoritative turn"]
+          }
         },
         settings: { override_seconds: 5 }
       })
@@ -102,7 +106,29 @@ function sendSnapshot() {
   if (commands.length !== 1 || commands[0].command.player_id !== "42") {
     throw new Error("Mock pick did not fire after the override period");
   }
-  if (statuses.length !== 5) throw new Error("Each accepted snapshot should update status");
+  runtimeListener({
+    type: "DRAFT_AGENT_PICK_RESULT",
+    result: {
+      ok: false,
+      message: "Selection blocked: the recommended player is unavailable.",
+      league_id: "MOCK",
+      draft_id: "MOCK",
+      overall_pick: 6,
+      player_id: "42"
+    }
+  }, { tab: { id: 9 } }, () => {});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (syncMessages.length !== 2) {
+    throw new Error("A recoverable rejection did not request exactly one fresh snapshot");
+  }
+  now = 6000;
+  await sendSnapshot();
+  now = 10000;
+  await sendSnapshot();
+  if (commands.length !== 1) throw new Error("Recovery retry fired before a fresh five-second arm");
+  now = 12000;
+  await sendSnapshot();
+  if (commands.length !== 2) throw new Error("A fresh snapshot did not re-arm one bounded retry");
   runtimeListener({
     type: "DRAFT_AGENT_PICK_RESULT",
     result: {
@@ -113,11 +139,17 @@ function sendSnapshot() {
       player_id: "42",
       name: "Test Runner"
     }
-  }, {}, () => {});
+  }, { tab: { id: 9 } }, () => {});
   await new Promise((resolve) => setTimeout(resolve, 0));
   if (!fetchRequests.some((request) => request.url.endsWith("/api/espn/pick-result"))) {
     throw new Error("Successful mock selection was not sent to the local decision audit");
   }
+  now = 20000;
+  await sendSnapshot();
+  if (commands.length !== 2 || syncMessages.length !== 2) {
+    throw new Error("A completed recovery caused a duplicate submission or extra resync");
+  }
+  if (statuses.length < 9) throw new Error("Accepted snapshots and recovery outcomes were not reported");
   console.log("background bridge tests passed");
 })().catch((error) => {
   console.error(error);

@@ -124,6 +124,13 @@ command({ overall_pick: 7 });
 if (selectedId !== null || !results.at(-1)?.message.includes("stale")) {
   throw new Error("A stale mock pick was not blocked");
 }
+if (
+  results.at(-1)?.league_id !== "MOCK-LEAGUE" ||
+  results.at(-1)?.overall_pick !== 7 ||
+  results.at(-1)?.player_id !== "42"
+) {
+  throw new Error("A rejected mock command did not include bounded-recovery identity");
+}
 
 myPick = true;
 command();

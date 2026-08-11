@@ -9,7 +9,11 @@ let sentMessage = null;
 const stored = {
   enabled: true,
   autoPickMocks: true,
-  draftAgentLastStatus: null
+  draftAgentLastStatus: {
+    ok: false,
+    message: "NOT READY: roster snapshot is incomplete.",
+    at: "2026-08-11T00:00:00Z"
+  }
 };
 const elements = {
   enabled: { checked: true },
@@ -40,6 +44,10 @@ const context = {
 vm.runInNewContext(fs.readFileSync("browser-companion/popup.js", "utf8"), context);
 
 (async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (!elements.status.textContent.startsWith("Not ready: NOT READY")) {
+    throw new Error("Popup did not distinguish NOT READY from a connection failure");
+  }
   if (!saveHandler) throw new Error("Save handler was not registered");
   await saveHandler();
   if (injections.length !== 2) throw new Error("Expected exactly two script injections");

@@ -133,7 +133,14 @@
     if (!isCurrent()) return;
     const store = findDraftStore();
     const draft = store?.draft;
-    const fail = (message) => emitResult({ ok: false, message });
+    const fail = (message) => emitResult({
+      ok: false,
+      message,
+      league_id: String(command?.league_id || draft?.leagueId || ""),
+      draft_id: String(command?.league_id || draft?.leagueId || ""),
+      overall_pick: Number(command?.overall_pick || 0),
+      player_id: String(command?.player_id || "")
+    });
     if (!command?.mock_only || !draft) return fail("Draft state is unavailable.");
     if (draft.isMockLeague !== true) return fail("Selection blocked: this is not an ESPN mock draft.");
     if (String(draft.leagueId || "") !== String(command.league_id || "")) {

@@ -15,7 +15,11 @@ class EspnBridgeTests(unittest.TestCase):
         self.config = LeagueConfig(user_slot=6)
         self.engine = DraftEngine(self.config)
         self.players = [
-            replace(player, external_ids={"espn": str(index)})
+            replace(
+                player,
+                external_ids={"espn": str(index)},
+                signals={"consensus_rank": float(index - 999)},
+            )
             for index, player in enumerate(demo_players(), 1000)
         ]
         self.bridge = EspnDraftBridge()
@@ -54,6 +58,7 @@ class EspnBridgeTests(unittest.TestCase):
         self.assertEqual(len(state["recommendations"]), 5)
         self.assertIsNotNone(state["pending_espn_player_id"])
         self.assertTrue(state["mock_command_ready"])
+        self.assertTrue(state["readiness"]["ready"])
 
     def test_rejects_duplicate_and_low_match_snapshots(self):
         duplicate = self.payload()
@@ -65,6 +70,17 @@ class EspnBridgeTests(unittest.TestCase):
         missing["available_player_ids"] = ["unknown-1", "unknown-2"]
         with self.assertRaisesRegex(ValueError, "50%"):
             self.bridge.ingest(missing, self.players, self.engine, self.config)
+
+        poor = self.payload()
+        poor["available_player_ids"].extend(
+            f"unknown-{number}" for number in range(60)
+        )
+        poor_state = self.bridge.ingest(poor, self.players, self.engine, self.config)
+        self.assertFalse(poor_state["readiness"]["ready"])
+        self.assertTrue(
+            any("mapped" in reason for reason in poor_state["readiness"]["reasons"])
+        )
+        self.assertIsNone(poor_state["pending_espn_player_id"])
 
     def test_off_clock_snapshot_precomputes_next_pick_without_pending_submission(self):
         payload = self.payload()
@@ -80,11 +96,75 @@ class EspnBridgeTests(unittest.TestCase):
         payload = self.payload()
         payload["overall_pick"] = 7
         payload["on_clock"] = True
+        roster_id = payload["available_player_ids"].pop(0)
+        payload["roster_player_ids"] = [roster_id]
         state = self.bridge.ingest(payload, self.players, self.engine, self.config)
         self.assertFalse(state["on_clock"])
         self.assertEqual(state["decision_pick"], 19)
         self.assertIsNone(state["pending_espn_player_id"])
         self.assertEqual(self.bridge.decisions()[0]["decision_pick"], 19)
+
+    def test_slot_one_pick_24_empty_roster_fails_closed_after_confirmed_pick(self):
+        config = LeagueConfig(user_slot=1)
+        engine = DraftEngine(config)
+        first = self.payload()
+        first.update({"overall_pick": 1, "user_slot": 1, "on_clock": True})
+        state = self.bridge.ingest(first, self.players, engine, config)
+        selected_id = state["pending_espn_player_id"]
+        self.bridge.record_pick_result(
+            {
+                "ok": True,
+                "draft_id": first["draft_id"],
+                "overall_pick": 1,
+                "player_id": selected_id,
+                "name": state["recommendations"][0]["name"],
+            }
+        )
+
+        stale = self.payload()
+        stale.update({"overall_pick": 24, "user_slot": 1, "on_clock": True})
+        stale_state = self.bridge.ingest(stale, self.players, engine, config)
+        self.assertFalse(stale_state["readiness"]["ready"])
+        self.assertEqual(stale_state["expected_roster_size"], 1)
+        self.assertEqual(stale_state["observed_roster_size"], 0)
+        self.assertEqual(stale_state["recommendations"], [])
+        self.assertIsNone(stale_state["pending_espn_player_id"])
+        self.assertFalse(stale_state["mock_command_ready"])
+        self.assertEqual(self.bridge.decision_summary()["total"], 1)
+
+        replacement_id = next(item for item in stale["available_player_ids"] if item != selected_id)
+        swapped = self.payload()
+        swapped.update(
+            {
+                "overall_pick": 24,
+                "user_slot": 1,
+                "on_clock": True,
+                "roster_player_ids": [replacement_id],
+            }
+        )
+        swapped["available_player_ids"].remove(replacement_id)
+        swapped_state = self.bridge.ingest(swapped, self.players, engine, config)
+        self.assertFalse(swapped_state["readiness"]["ready"])
+        self.assertTrue(
+            any("previously confirmed" in reason for reason in swapped_state["readiness"]["reasons"])
+        )
+        self.assertEqual(swapped_state["recommendations"], [])
+
+    def test_stale_source_status_blocks_an_otherwise_valid_snapshot(self):
+        state = self.bridge.ingest(
+            self.payload(),
+            self.players,
+            self.engine,
+            self.config,
+            source_status={
+                "ready": False,
+                "reasons": ["Current signals are stale."],
+                "sources": {"signals": {"fresh": False}},
+            },
+        )
+        self.assertFalse(state["readiness"]["ready"])
+        self.assertIn("Current signals are stale.", state["readiness"]["reasons"])
+        self.assertEqual(state["recommendations"], [])
 
     def test_current_catalog_supports_rookies_and_negative_dst_ids(self):
         payload = self.payload()

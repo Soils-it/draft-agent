@@ -24,6 +24,10 @@ class EspnDraftBridge:
     """
 
     positions = ("QB", "RB", "WR", "TE", "K", "DST")
+    minimum_mapping_rate = 0.8
+    minimum_historical_rate = 0.5
+    minimum_signal_rate = 0.75
+    minimum_catalog_size = 100
 
     @staticmethod
     def _team_for_pick(overall: int, teams: int) -> int:
@@ -33,11 +37,17 @@ class EspnDraftBridge:
 
     def __init__(self, audit_path: Path | None = None, max_audit_entries: int = 500) -> None:
         self.mock_rosters: dict[str, set[str]] = {}
+        self.confirmed_rosters: dict[str, set[str]] = {}
         self.exposure_limit = 0.0
         self.audit_path = audit_path
         self.max_audit_entries = max_audit_entries
         self._audit_lock = threading.Lock()
         self.decision_log = self._load_decision_log()
+        for entry in self.decision_log:
+            draft_id = str(entry.get("draft_id") or "")
+            selected_id = str((entry.get("selected_player") or {}).get("espn_id") or "")
+            if draft_id and selected_id and entry.get("status") in {"selected", "submitted"}:
+                self.confirmed_rosters.setdefault(draft_id, set()).add(selected_id)
         if self.audit_path is not None and self.audit_path.exists():
             with self._audit_lock:
                 self._persist_decision_log_locked()
@@ -46,6 +56,34 @@ class EspnDraftBridge:
             "mode": "shadow",
             "can_submit": False,
             "message": "Waiting for an ESPN mock-draft snapshot.",
+            "readiness": {
+                "ready": False,
+                "label": "NOT READY",
+                "reasons": ["Waiting for a current ESPN draft snapshot."],
+                "coverage": {},
+                "sources": {},
+            },
+            "decision_log": self.decision_summary(),
+        }
+
+    def invalidate(self, message: str) -> None:
+        """Fail closed until a new browser snapshot is validated."""
+        self.state = {
+            "connected": False,
+            "mode": "shadow",
+            "can_submit": False,
+            "recommendations": [],
+            "prequeue_espn_player_ids": [],
+            "pending_espn_player_id": None,
+            "mock_command_ready": False,
+            "message": message,
+            "readiness": {
+                "ready": False,
+                "label": "NOT READY",
+                "reasons": [message],
+                "coverage": {},
+                "sources": {},
+            },
             "decision_log": self.decision_summary(),
         }
 
@@ -328,6 +366,9 @@ class EspnDraftBridge:
             ).get("espn_id")
             entry["submitted_at"] = datetime.now(timezone.utc).isoformat()
             entry["updated_at"] = entry["submitted_at"]
+            self.confirmed_rosters.setdefault(draft_id, set()).add(player_id)
+            if entry.get("is_mock"):
+                self.mock_rosters.setdefault(draft_id, set()).add(player_id)
             self._persist_decision_log_locked()
         self.state["decision_log"] = self.decision_summary()
 
@@ -398,6 +439,63 @@ class EspnDraftBridge:
             if EspnDraftBridge._team_for_pick(overall, config.teams) == config.user_slot:
                 return overall
         return final_pick + 1
+
+    @staticmethod
+    def _expected_prior_user_selections(overall_pick: int, config: LeagueConfig) -> int:
+        return sum(
+            EspnDraftBridge._team_for_pick(pick, config.teams) == config.user_slot
+            for pick in range(1, overall_pick)
+        )
+
+    def _readiness(
+        self,
+        *,
+        catalog_size: int,
+        mapping_rate: float,
+        roster_mapping_rate: float,
+        historical_rate: float,
+        signal_rate: float,
+        roster_reasons: list[str],
+        source_status: dict[str, object] | None,
+    ) -> dict[str, object]:
+        reasons = list(roster_reasons)
+        if catalog_size < self.minimum_catalog_size:
+            reasons.append(
+                f"ESPN catalog has only {catalog_size} players; at least {self.minimum_catalog_size} are required."
+            )
+        if mapping_rate < self.minimum_mapping_rate:
+            reasons.append(
+                f"Only {mapping_rate:.0%} of available ESPN players mapped; refresh complete player data."
+            )
+        if roster_mapping_rate < 1:
+            reasons.append(
+                f"Only {roster_mapping_rate:.0%} of roster players mapped; wait for a complete snapshot."
+            )
+        if historical_rate < self.minimum_historical_rate:
+            reasons.append(
+                f"Historical enrichment is {historical_rate:.0%}; load or restore nflverse data."
+            )
+        if signal_rate < self.minimum_signal_rate:
+            reasons.append(
+                f"Current signal enrichment is {signal_rate:.0%}; refresh consensus and injury signals."
+            )
+        if source_status is not None and not bool(source_status.get("ready")):
+            for reason in source_status.get("reasons", []):
+                if isinstance(reason, str) and reason not in reasons:
+                    reasons.append(reason)
+        return {
+            "ready": not reasons,
+            "label": "READY" if not reasons else "NOT READY",
+            "reasons": reasons,
+            "coverage": {
+                "catalog_players": catalog_size,
+                "available_mapping_rate": round(mapping_rate, 3),
+                "roster_mapping_rate": round(roster_mapping_rate, 3),
+                "historical_enrichment_rate": round(historical_rate, 3),
+                "signal_enrichment_rate": round(signal_rate, 3),
+            },
+            "sources": dict((source_status or {}).get("sources", {})),
+        }
 
     @staticmethod
     def _catalog(
@@ -480,6 +578,7 @@ class EspnDraftBridge:
         engine: DraftEngine,
         config: LeagueConfig,
         signal_records: list[SignalRecord] | None = None,
+        source_status: dict[str, object] | None = None,
     ) -> dict[str, object]:
         league_id = str(payload.get("league_id") or "").strip()
         draft_id = str(payload.get("draft_id") or "").strip()
@@ -514,11 +613,21 @@ class EspnDraftBridge:
             raise ValueError("available_player_ids cannot be empty")
         if set(available_ids) & set(roster_ids):
             raise ValueError("a player cannot be both available and on the roster")
-        exposure_rates: dict[str, float] = {}
-        mock_history_count = 0
-        if is_mock:
-            self.mock_rosters[draft_id] = set(roster_ids)
-            exposure_rates, mock_history_count = self._exposure_rates(draft_id)
+        expected_roster_size = self._expected_prior_user_selections(
+            overall_pick, snapshot_config
+        )
+        roster_set = set(roster_ids)
+        confirmed = self.confirmed_rosters.get(draft_id, set())
+        roster_reasons: list[str] = []
+        if len(roster_ids) < expected_roster_size:
+            roster_reasons.append(
+                f"Roster snapshot has {len(roster_ids)} players but snake order requires at least {expected_roster_size}."
+            )
+        missing_confirmed = sorted(confirmed - roster_set)
+        if missing_confirmed:
+            roster_reasons.append(
+                f"Roster snapshot lost {len(missing_confirmed)} previously confirmed selection(s)."
+            )
 
         merged_players, enrichment_rate, signal_rate = self._catalog(payload, players)
         if signal_records:
@@ -538,20 +647,45 @@ class EspnDraftBridge:
             raise ValueError(
                 "fewer than 50% of ESPN available players mapped to the local data; refresh player data"
             )
+        roster_mapping_rate = (
+            len(mapped_roster) / len(roster_ids) if roster_ids else 1.0
+        )
+        readiness = self._readiness(
+            catalog_size=len(merged_players),
+            mapping_rate=mapping_rate,
+            roster_mapping_rate=roster_mapping_rate,
+            historical_rate=enrichment_rate,
+            signal_rate=signal_rate,
+            roster_reasons=roster_reasons,
+            source_status=source_status,
+        )
+        if not roster_reasons:
+            self.confirmed_rosters.setdefault(draft_id, set()).update(roster_set)
+        exposure_rates: dict[str, float] = {}
+        mock_history_count = 0
+        if is_mock:
+            if not roster_reasons:
+                self.mock_rosters[draft_id] = set(roster_ids)
+            exposure_rates, mock_history_count = self._exposure_rates(draft_id)
         decision_pick = (
             overall_pick
             if on_clock
             else self._next_user_pick(overall_pick, snapshot_config)
         )
-        ranked = engine.rank(
-            mapped_available,
-            mapped_roster,
-            decision_pick,
-            self._next_user_pick(decision_pick, snapshot_config),
-            len(mapped_available),
-            exposure_rates=exposure_rates,
-            exposure_limit=self.exposure_limit if is_mock else 0.0,
-        ) if decision_pick <= snapshot_config.teams * snapshot_config.roster_size else []
+        ranked = (
+            engine.rank(
+                mapped_available,
+                mapped_roster,
+                decision_pick,
+                self._next_user_pick(decision_pick, snapshot_config),
+                len(mapped_available),
+                exposure_rates=exposure_rates,
+                exposure_limit=self.exposure_limit if is_mock else 0.0,
+            )
+            if readiness["ready"]
+            and decision_pick <= snapshot_config.teams * snapshot_config.roster_size
+            else []
+        )
         recommendations = ranked[:5]
         if ranked:
             self._record_decision(
@@ -585,6 +719,8 @@ class EspnDraftBridge:
             "historical_enrichment_rate": round(enrichment_rate, 3),
             "signal_enrichment_rate": round(signal_rate, 3),
             "mapped_roster": len(mapped_roster),
+            "expected_roster_size": expected_roster_size,
+            "observed_roster_size": len(roster_ids),
             "roster": [
                 {**player.as_dict(), "projected_points": projected_points(player)}
                 for player in mapped_roster
@@ -595,8 +731,13 @@ class EspnDraftBridge:
                 recommendations[0]["espn_id"] if on_clock and recommendations else None
             ),
             "mock_command_ready": bool(on_clock and recommendations),
+            "readiness": readiness,
             "decision_log": self.decision_summary(),
             "received_at": datetime.now(timezone.utc).isoformat(),
-            "message": "Recommendations are precomputed; the companion may submit only in mock mode.",
+            "message": (
+                "All roster and data checks passed; mock-only recommendations are armed."
+                if readiness["ready"]
+                else str(readiness["reasons"][0])
+            ),
         }
         return self.state

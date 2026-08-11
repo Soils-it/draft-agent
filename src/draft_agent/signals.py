@@ -28,6 +28,13 @@ SLEEPER_TREND_URL = (
     "https://api.sleeper.app/v1/players/nfl/trending/{kind}"
     "?lookback_hours=24&limit=100"
 )
+SIGNAL_CACHE_FILES = {
+    "player_ids.csv": 5_000_000,
+    "consensus.csv": 3_000_000,
+    "sleeper_players.json": 20_000_000,
+    "trending_add.json": 500_000,
+    "trending_drop.json": 500_000,
+}
 
 
 @dataclass
@@ -213,7 +220,12 @@ class FreeSignalProvider:
     def _load(self, url: str, filename: str, refresh: bool, limit: int) -> tuple[str, bool]:
         path = self.cache_dir / filename
         if path.exists() and not refresh:
-            return path.read_text(encoding="utf-8"), True
+            try:
+                if path.stat().st_size > limit:
+                    raise ValueError(f"cached {filename} exceeded its safety limit")
+                return path.read_text(encoding="utf-8"), True
+            except OSError as exc:
+                raise ValueError(f"could not read cached {filename}") from exc
         request = urllib.request.Request(url, headers={"User-Agent": "espn-fantasy-draft-agent/0.2"})
         try:
             with urllib.request.urlopen(request, timeout=25) as response:
@@ -229,6 +241,62 @@ class FreeSignalProvider:
         path.write_text(content, encoding="utf-8")
         return content, False
 
+    @staticmethod
+    def _fetched_at(paths: list[Path]) -> str:
+        oldest = min(path.stat().st_mtime for path in paths)
+        return datetime.fromtimestamp(oldest, timezone.utc).isoformat()
+
+    @staticmethod
+    def _records(
+        ids: str,
+        consensus: str,
+        sleeper: str,
+        adds: str,
+        drops: str,
+    ) -> list[SignalRecord]:
+        sleeper_payload = json.loads(sleeper)
+        adds_payload = json.loads(adds)
+        drops_payload = json.loads(drops)
+        if not isinstance(sleeper_payload, dict):
+            raise ValueError("cached Sleeper players data must be an object")
+        if not isinstance(adds_payload, list) or not isinstance(drops_payload, list):
+            raise ValueError("cached Sleeper trend data must be lists")
+        records = parse_consensus_csv(consensus, parse_id_crosswalk(ids))
+        merge_sleeper_data(records, sleeper_payload, adds_payload, drops_payload)
+        return records
+
+    @staticmethod
+    def _sources() -> dict[str, str]:
+        return {
+            "consensus": "FantasyPros ECR via DynastyProcess open data",
+            "identity": "DynastyProcess player ID crosswalk",
+            "availability": "Sleeper player, injury, depth chart, and trend API",
+        }
+
+    def load_cached(self) -> SignalResult | None:
+        """Restore only a complete validated cache; this method never downloads."""
+        paths = [self.cache_dir / filename for filename in SIGNAL_CACHE_FILES]
+        if not all(path.is_file() for path in paths):
+            return None
+        contents: dict[str, str] = {}
+        for filename, limit in SIGNAL_CACHE_FILES.items():
+            path = self.cache_dir / filename
+            if path.stat().st_size > limit:
+                raise ValueError(f"cached {filename} exceeded its safety limit")
+            contents[filename] = path.read_text(encoding="utf-8")
+        return SignalResult(
+            records=self._records(
+                contents["player_ids.csv"],
+                contents["consensus.csv"],
+                contents["sleeper_players.json"],
+                contents["trending_add.json"],
+                contents["trending_drop.json"],
+            ),
+            fetched_at=self._fetched_at(paths),
+            cached=True,
+            sources=self._sources(),
+        )
+
     def load(self, refresh: bool = False) -> SignalResult:
         ids, ids_cached = self._load(PLAYER_IDS_URL, "player_ids.csv", refresh, 5_000_000)
         consensus, consensus_cached = self._load(
@@ -243,15 +311,10 @@ class FreeSignalProvider:
         drops, drops_cached = self._load(
             SLEEPER_TREND_URL.format(kind="drop"), "trending_drop.json", refresh, 500_000
         )
-        records = parse_consensus_csv(consensus, parse_id_crosswalk(ids))
-        merge_sleeper_data(records, json.loads(sleeper), json.loads(adds), json.loads(drops))
+        paths = [self.cache_dir / filename for filename in SIGNAL_CACHE_FILES]
         return SignalResult(
-            records=records,
-            fetched_at=datetime.now(timezone.utc).isoformat(),
+            records=self._records(ids, consensus, sleeper, adds, drops),
+            fetched_at=self._fetched_at(paths),
             cached=all((ids_cached, consensus_cached, sleeper_cached, adds_cached, drops_cached)),
-            sources={
-                "consensus": "FantasyPros ECR via DynastyProcess open data",
-                "identity": "DynastyProcess player ID crosswalk",
-                "availability": "Sleeper player, injury, depth chart, and trend API",
-            },
+            sources=self._sources(),
         )
