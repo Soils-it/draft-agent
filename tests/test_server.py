@@ -1,9 +1,10 @@
 import copy
 import json
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from draft_agent import server
 from draft_agent.engine import DraftEngine
@@ -200,6 +201,75 @@ class ServerDataSafetyTests(unittest.TestCase):
             health = server._data_health()
             self.assertFalse(health["ready"])
             self.assertTrue(any("signals" in reason.lower() for reason in health["reasons"]))
+
+    def test_startup_rejects_malformed_trends_and_keeps_not_ready_state(self):
+        cases = (
+            ("trending_add.json", [1]),
+            ("trending_drop.json", [None]),
+        )
+        for filename, payload in cases:
+            with self.subTest(filename=filename), TemporaryDirectory() as directory:
+                nflverse, signals = write_fake_caches(Path(directory))
+                (signals.cache_dir / filename).write_text(
+                    json.dumps(payload), encoding="utf-8"
+                )
+                restore_results = []
+                original_restore = server._restore_cached_data
+
+                def track_restore() -> bool:
+                    result = original_restore()
+                    restore_results.append(result)
+                    return result
+
+                http_server = Mock()
+                with ExitStack() as stack:
+                    stack.enter_context(
+                        patch.object(server, "NflverseProvider", return_value=nflverse)
+                    )
+                    stack.enter_context(
+                        patch.object(server, "FreeSignalProvider", return_value=signals)
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            server, "_restore_cached_data", side_effect=track_restore
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(server, "_load_preferences", return_value=None)
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            server, "ThreadingHTTPServer", return_value=http_server
+                        )
+                    )
+                    stack.enter_context(patch("builtins.print"))
+                    urlopen = stack.enter_context(
+                        patch(
+                            "urllib.request.urlopen",
+                            side_effect=AssertionError("network used"),
+                        )
+                    )
+                    server.main()
+
+                self.assertEqual(restore_results, [False])
+                urlopen.assert_not_called()
+                http_server.serve_forever.assert_called_once_with()
+                self.assertEqual(server.DATA_SOURCE["kind"], "nflverse")
+                self.assertIn("invalid", server.DATA_SOURCE["restore_warning"].lower())
+
+                state = server._state_payload()
+                self.assertFalse(state["readiness"]["ready"])
+                self.assertTrue(
+                    any(
+                        "load current" in reason.lower()
+                        and "signals" in reason.lower()
+                        for reason in state["readiness"]["reasons"]
+                    )
+                )
+                self.assertEqual(
+                    state["data_source"]["restore_warning"],
+                    server.DATA_SOURCE["restore_warning"],
+                )
 
 
 if __name__ == "__main__":

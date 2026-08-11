@@ -58,6 +58,19 @@ class SignalTests(unittest.TestCase):
         self.assertEqual(record.context["depth_chart_position"], "LWR")
         self.assertEqual(record.external_ids["espn"], "456")
 
+    def test_rejects_non_object_sleeper_trend_entries(self):
+        cases = (
+            ("add", [1], []),
+            ("drop", [], [None]),
+        )
+        for kind, adds, drops in cases:
+            with self.subTest(kind=kind):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"Sleeper {kind} trend entry 0 must be an object",
+                ):
+                    merge_sleeper_data([], {}, adds, drops)
+
     def test_matches_espn_id_before_name_and_safe_name_fallback(self):
         players = [
             Player("one", "Changed Name", "DET", "WR", 10, external_ids={"espn": "456"}),

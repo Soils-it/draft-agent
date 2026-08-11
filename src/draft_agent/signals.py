@@ -130,19 +130,30 @@ def parse_consensus_csv(
     return records
 
 
+def _trend_counts(items: list[Any], kind: str) -> dict[str, float]:
+    counts: dict[str, float] = {}
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Sleeper {kind} trend entry {index} must be an object"
+            )
+        counts[str(item.get("player_id"))] = _float(item.get("count")) or 0
+    return counts
+
+
 def merge_sleeper_data(
     records: list[SignalRecord],
     players_payload: dict[str, Any],
-    adds: list[dict[str, Any]],
-    drops: list[dict[str, Any]],
+    adds: list[Any],
+    drops: list[Any],
 ) -> None:
     by_sleeper = {
         record.external_ids["sleeper"]: record
         for record in records
         if record.external_ids.get("sleeper")
     }
-    add_counts = {str(item.get("player_id")): _float(item.get("count")) or 0 for item in adds}
-    drop_counts = {str(item.get("player_id")): _float(item.get("count")) or 0 for item in drops}
+    add_counts = _trend_counts(adds, "add")
+    drop_counts = _trend_counts(drops, "drop")
     for sleeper_id, record in by_sleeper.items():
         item = players_payload.get(sleeper_id)
         if not isinstance(item, dict):
