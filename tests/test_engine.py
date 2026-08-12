@@ -53,7 +53,47 @@ class EngineTests(unittest.TestCase):
         engine = DraftEngine(self.config)
         engine.weights.update({key: 0 for key in engine.weights.__dict__})
         engine.weights.update({"consensus": 1})
-        self.assertEqual(engine.rank(players, [], 6, 19, 1)[0]["id"], "early")
+        self.assertEqual(engine.rank(players, [], 15, 22, 1)[0]["id"], "early")
+
+    def test_market_rank_blends_espn_and_ecr_and_penalizes_disagreement(self):
+        disputed = Player(
+            "disputed",
+            "Disputed WR",
+            "AAA",
+            "WR",
+            129,
+            projected_points_override=200,
+            signals={"consensus_rank": 79},
+        )
+        stable = Player(
+            "stable",
+            "Stable WR",
+            "BBB",
+            "WR",
+            100,
+            projected_points_override=200,
+            signals={"consensus_rank": 100},
+        )
+        engine = DraftEngine(self.config, simulation_samples=20)
+        self.assertAlmostEqual(engine._market_rank(disputed), 114.0)
+        engine.weights.update({key: 0 for key in engine.weights.__dict__})
+        engine.weights.update({"market_disagreement": 1})
+        roster = [
+            Player("rb1", "RB One", "CCC", "RB", 10),
+            Player("rb2", "RB Two", "DDD", "RB", 20),
+            Player("wr1", "WR One", "EEE", "WR", 30),
+            Player("wr2", "WR Two", "FFF", "WR", 40),
+        ]
+        ranked = engine.rank([disputed, stable], roster, 100, 109)
+        self.assertEqual(ranked[0]["id"], "stable")
+        disputed_result = next(item for item in ranked if item["id"] == "disputed")
+        self.assertEqual(disputed_result["espn_rank"], 129.0)
+        self.assertEqual(disputed_result["consensus_rank"], 79.0)
+        self.assertEqual(disputed_result["market_disagreement"], 1.0)
+        self.assertLess(
+            disputed_result["contributions"]["market_disagreement"],
+            0,
+        )
 
     def test_top_market_rb_beats_high_projection_wr_reach_at_pick_two(self):
         players = [
@@ -913,7 +953,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(fallback[0]["id"], "reach")
         self.assertEqual(fallback[0]["market_reach"], 30)
 
-    def test_te_tier_urgency_applies_in_rounds_eight_through_ten(self):
+    def test_te_tier_urgency_strengthens_by_round_ten(self):
         engine = DraftEngine(self.config, simulation_samples=50)
         engine.weights.update({key: 0 for key in engine.weights.__dict__})
         engine.weights.update({"te_urgency": 1})
@@ -927,9 +967,9 @@ class EngineTests(unittest.TestCase):
             Player("wr1", "WR One", "EEE", "WR", 15),
             Player("wr2", "WR Two", "FFF", "WR", 25),
         ]
-        ranked = engine.rank(candidates, roster, 97, 108)
+        ranked = engine.rank(candidates, roster, 116, 125)
         self.assertEqual(ranked[0]["id"], "te")
-        self.assertGreater(ranked[0]["components"]["te_urgency"], 0)
+        self.assertGreaterEqual(ranked[0]["components"]["te_urgency"], 0.75)
 
     def test_rookie_camp_role_rewards_first_team_depth(self):
         engine = DraftEngine(self.config, simulation_samples=50)
@@ -978,6 +1018,37 @@ class EngineTests(unittest.TestCase):
             Player("dst", "Defense", "GGG", "DST", 1, projected_points_override=300),
         ]
         ranked = engine.rank(candidates, roster, 67, 78)
+        self.assertEqual([item["id"] for item in ranked], ["rb2"])
+
+    def test_round_five_secures_rb2_before_a_third_receiver(self):
+        engine = DraftEngine(self.config, simulation_samples=20)
+        roster = [
+            Player("rb1", "RB One", "AAA", "RB", 31),
+            Player("wr1", "WR One", "BBB", "WR", 5),
+            Player("wr2", "WR Two", "CCC", "WR", 27),
+            Player("qb1", "QB One", "DDD", "QB", 50),
+        ]
+        candidates = [
+            Player(
+                "rb2",
+                "RB Two",
+                "EEE",
+                "RB",
+                60,
+                projected_points_override=210,
+                signals={"consensus_rank": 60},
+            ),
+            Player(
+                "wr3",
+                "Falling WR",
+                "FFF",
+                "WR",
+                45,
+                projected_points_override=250,
+                signals={"consensus_rank": 45},
+            ),
+        ]
+        ranked = engine.rank(candidates, roster, 53, 68)
         self.assertEqual([item["id"] for item in ranked], ["rb2"])
 
     def test_round_four_requires_missing_wr_and_rb_depth_stays_balanced(self):

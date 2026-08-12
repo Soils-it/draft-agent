@@ -140,8 +140,8 @@ python -m unittest discover -s tests -v
 Each available player receives normalized component scores for:
 
 - projected fantasy points
-- pick-relative full-PPR expert consensus, best-available market quality,
-  analyst uncertainty, and reach cost
+- a 70% ESPN-room / 30% external-ECR market rank, source disagreement,
+  best-available market quality, analyst uncertainty, and reach cost
 - value over replacement (VOR)
 - positional scarcity and nearby tier drop
 - roster need
@@ -160,13 +160,17 @@ Every weight is adjustable in the dashboard, and every recommendation exposes
 its raw component scores and signed weighted contributions. The model is
 deterministic for the same draft state and settings.
 
-Consensus is anchored to the current selection rather than normalized across
-the full draft pool. This makes the difference between RB2 and WR10 meaningful
+Market rank blends ESPN's current draft-room order at 70% with external expert
+consensus at 30%. This keeps useful independent information without allowing a
+stale or strongly dissenting ECR to create a multi-round reach against the room
+being drafted. The absolute source gap is also a visible, adjustable penalty.
+Market value is anchored to the current selection rather than normalized across
+the full draft pool, so the difference between RB2 and WR10 remains meaningful
 at pick 2. Best-available market quality preserves ordering between two players
 who have both fallen, and a same-position dominance penalty favors the player
-with meaningfully better consensus unless the alternative projects at least
-10% higher. Projection, VOR, scarcity, tier drop, and turn simulation use smaller
-weights because they are correlated views of the same underlying projection.
+with meaningfully better market support unless the alternative projects at
+least 10% higher. Projection, VOR, scarcity, tier drop, and turn simulation use
+smaller weights because they are correlated views of the same projection.
 The default replacement baselines value RB42 versus WR36 to reflect the faster
 loss of usable RB volume in this league. Reaches are limited to six picks in
 round 1, ten in rounds 2-4, and receive an explicit score penalty. IR/PUP
@@ -174,8 +178,8 @@ players are excluded through round 12 when a healthy candidate is available.
 
 The default 12-team, 1-QB roster-construction profile also prevents raw QB
 scoring from dominating cross-position comparisons. It normally delays the
-first QB until round 4, but permits a top-36 consensus QB earlier when that
-player falls at least 12 picks below consensus. It blocks a backup QB through
+first QB until round 4, but permits a top-36 blended-market QB earlier when that
+player falls at least 12 picks below market. It blocks a backup QB through
 round 12 and then requires that backup to have fallen at least 20 picks below
 consensus. A healthy top-90 overall incumbent QB suppresses QB2 unless the
 candidate is at least 15 market spots better or projects at least 5% higher. A
@@ -189,10 +193,11 @@ K and D/ST selections receive the same lineup-quality accounting, while their
 position caps prevent redundant specialists. The opening remains value-based
 between RB and WR, including an elite first-round WR. After a first-round WR, a
 reasonably priced RB receives a strong round-2 anchor bonus. RB1/WR1 are
-targeted by round 3 and a 2-RB/2-WR core by round 6, but the engine relaxes that
+targeted by round 3 and a 2-RB/2-WR core by round 5, but the engine relaxes that
 target instead of forcing a reach beyond ten picks. TE becomes available in
-round 4, gains tier urgency through rounds 8-12, and is not forced until round
-13. The profile reserves K and D/ST for rounds 15-16 and caps the planned RB
+round 4, gains tier urgency through rounds 7-12, and receives its strongest
+starter-tier pressure beginning in round 10. It is not forced until round 13.
+The profile reserves K and D/ST for rounds 15-16 and caps the planned RB
 bench at five. A market guardrail limits reaches to six picks in round 1, ten
 through round 4, 12 through round 8, 20 through round 12, and 35 afterward. RB
 replacement value is calculated deeper than QB replacement value to reflect
@@ -216,11 +221,14 @@ to slots 1 through 12 rather than encoding a preferred draft position.
 
 Every ESPN decision is also written to the ignored local file
 `.cache/draft_decisions.json`. Each record retains the roster and active rules,
-top five overall candidates, best eligible candidate or blocking status for
+top five overall candidates, ESPN rank, external ECR, blended market rank,
+source disagreement, best eligible candidate or blocking status for
 QB/RB/WR/TE/K/DST, raw components, signed contributions, submitted player, and
 whether the final roster addition matched the recommendation. Recent results
-appear in the dashboard. Complete records are available at `/api/decisions`
-and survive Python server restarts; at most 500 decisions are retained. The page
+appear in the dashboard. The Mock Exposure panel summarizes the 20 most common
+players across the last 12 completed mocks in this persisted audit. Complete
+records are available at `/api/decisions` and survive Python server restarts;
+at most 500 decisions are retained. The page
 observer uses ESPN's own current-turn helper, and the local bridge independently
 checks snake-order ownership. Impossible historical turn records are discarded
 when the audit is loaded.
@@ -233,8 +241,9 @@ drafts and avoids players already selected at or above that rate across prior
 mocks observed during the current server run. Keep exposure at 0% for the real
 draft or when repeated best-value selections are desired; at 0%, both the hard
 exposure filter and the soft exposure score are disabled. Player preferences
-are persisted locally under the ignored `.cache/` directory; exposure history
-resets with the Python server.
+are persisted locally under the ignored `.cache/` directory. The optional cap's
+active history resets with the Python server; the read-only exposure report is
+rebuilt from the persisted decision audit.
 
 Rookie camp information is intentionally a supporting signal, not a primary
 ranking. The free Sleeper feed supplies rookie experience, current depth-chart

@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import threading
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,7 @@ class EspnDraftBridge:
                 "sources": {},
             },
             "decision_log": self.decision_summary(),
+            "mock_exposure_report": self.mock_exposure_summary(),
         }
 
     def invalidate(self, message: str) -> None:
@@ -85,6 +87,7 @@ class EspnDraftBridge:
                 "sources": {},
             },
             "decision_log": self.decision_summary(),
+            "mock_exposure_report": self.mock_exposure_summary(),
         }
 
     def _load_decision_log(self) -> list[dict[str, Any]]:
@@ -136,8 +139,11 @@ class EspnDraftBridge:
             "team": candidate.get("team"),
             "position": candidate.get("position"),
             "projected_points": candidate.get("projected_points"),
+            "espn_rank": candidate.get("espn_rank"),
+            "consensus_rank": candidate.get("consensus_rank"),
             "market_rank": candidate.get("market_rank"),
             "market_reach": candidate.get("market_reach"),
+            "market_disagreement": candidate.get("market_disagreement"),
             "draft_score": candidate.get("draft_score"),
             "survival_probability": candidate.get("survival_probability"),
             "top_driver": top_driver,
@@ -147,13 +153,19 @@ class EspnDraftBridge:
 
     @staticmethod
     def _basic_player(player: Player) -> dict[str, object]:
+        consensus_rank = DraftEngine._consensus_rank(player)
         return {
             "espn_id": player.external_ids.get("espn"),
             "name": player.name,
             "team": player.team,
             "position": player.position,
             "projected_points": projected_points(player),
+            "espn_rank": round(float(player.adp), 1),
+            "consensus_rank": (
+                round(consensus_rank, 1) if consensus_rank is not None else None
+            ),
             "market_rank": DraftEngine._market_rank(player),
+            "market_disagreement": DraftEngine._market_disagreement(player),
         }
 
     def _decision_rules(
@@ -371,6 +383,7 @@ class EspnDraftBridge:
                 self.mock_rosters.setdefault(draft_id, set()).add(player_id)
             self._persist_decision_log_locked()
         self.state["decision_log"] = self.decision_summary()
+        self.state["mock_exposure_report"] = self.mock_exposure_summary()
 
     def decision_summary(self) -> dict[str, object]:
         with self._audit_lock:
@@ -393,6 +406,74 @@ class EspnDraftBridge:
                     }
                 )
             return {"total": len(self.decision_log), "recent": recent}
+
+    def mock_exposure_summary(
+        self,
+        max_drafts: int = 12,
+        roster_size: int = 16,
+    ) -> dict[str, object]:
+        """Summarize repeated selections across recent completed mock drafts.
+
+        This is diagnostic only. It reads the persisted decision audit so the
+        report survives a Python restart, while the optional exposure cap keeps
+        its existing mock-only, in-memory behavior.
+        """
+        with self._audit_lock:
+            rosters: dict[str, set[str]] = {}
+            player_details: dict[str, dict[str, object]] = {}
+            last_seen: dict[str, int] = {}
+            for index, entry in enumerate(self.decision_log):
+                if not entry.get("is_mock") or entry.get("status") not in {
+                    "selected",
+                    "submitted",
+                }:
+                    continue
+                draft_id = str(entry.get("draft_id") or "")
+                selected = entry.get("selected_player") or {}
+                if not isinstance(selected, dict):
+                    continue
+                player_id = str(selected.get("espn_id") or "")
+                if not draft_id or not player_id:
+                    continue
+                rosters.setdefault(draft_id, set()).add(player_id)
+                last_seen[draft_id] = index
+                player_details[player_id] = {
+                    "espn_id": player_id,
+                    "name": selected.get("name") or "Unknown player",
+                    "position": selected.get("position") or "",
+                }
+
+            completed = sorted(
+                (
+                    (last_seen[draft_id], draft_id, player_ids)
+                    for draft_id, player_ids in rosters.items()
+                    if len(player_ids) >= roster_size
+                ),
+                key=lambda item: item[0],
+            )[-max_drafts:]
+            counts: Counter[str] = Counter()
+            for _, _, player_ids in completed:
+                counts.update(player_ids)
+            draft_count = len(completed)
+            players = [
+                {
+                    **player_details[player_id],
+                    "drafts": count,
+                    "rate": round(count / draft_count, 3),
+                }
+                for player_id, count in sorted(
+                    counts.items(),
+                    key=lambda item: (
+                        -item[1],
+                        str(player_details[item[0]]["name"]),
+                    ),
+                )[:20]
+            ]
+            return {
+                "draft_count": draft_count,
+                "window_size": max_drafts,
+                "players": players,
+            }
 
     def decisions(self, limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= self.max_audit_entries:
@@ -733,6 +814,7 @@ class EspnDraftBridge:
             "mock_command_ready": bool(on_clock and recommendations),
             "readiness": readiness,
             "decision_log": self.decision_summary(),
+            "mock_exposure_report": self.mock_exposure_summary(),
             "received_at": datetime.now(timezone.utc).isoformat(),
             "message": (
                 "All roster and data checks passed; mock-only recommendations are armed."

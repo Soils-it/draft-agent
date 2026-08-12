@@ -253,6 +253,69 @@ class EspnBridgeTests(unittest.TestCase):
         real_state = self.bridge.ingest(real, self.players, self.engine, self.config)
         self.assertFalse(real_state["is_mock"])
 
+    def test_mock_exposure_summary_uses_recent_completed_audit_drafts(self):
+        entries = []
+        for draft_number in range(13):
+            for roster_index in range(16):
+                player_id = (
+                    "always-selected"
+                    if roster_index == 0
+                    else f"player-{draft_number}-{roster_index}"
+                )
+                if draft_number == 0 and roster_index == 1:
+                    player_id = "old-window-only"
+                entries.append(
+                    {
+                        "draft_id": f"mock-{draft_number}",
+                        "is_mock": True,
+                        "status": "selected",
+                        "selected_player": {
+                            "espn_id": player_id,
+                            "name": player_id,
+                            "position": "WR",
+                        },
+                    }
+                )
+        entries.append(
+            {
+                "draft_id": "incomplete-mock",
+                "is_mock": True,
+                "status": "selected",
+                "selected_player": {
+                    "espn_id": "incomplete-only",
+                    "name": "Incomplete Only",
+                    "position": "RB",
+                },
+            }
+        )
+        entries.append(
+            {
+                "draft_id": "malformed-mock",
+                "is_mock": True,
+                "status": "selected",
+                "selected_player": "not-an-object",
+            }
+        )
+        self.bridge.decision_log = entries
+
+        report = self.bridge.mock_exposure_summary()
+        self.assertEqual(report["draft_count"], 12)
+        always = next(
+            player
+            for player in report["players"]
+            if player["espn_id"] == "always-selected"
+        )
+        self.assertEqual(always["drafts"], 12)
+        self.assertEqual(always["rate"], 1.0)
+        self.assertNotIn(
+            "old-window-only",
+            {player["espn_id"] for player in report["players"]},
+        )
+        self.assertNotIn(
+            "incomplete-only",
+            {player["espn_id"] for player in report["players"]},
+        )
+
     def test_decision_audit_covers_all_positions_reconciles_and_persists(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "decisions.json"
@@ -268,6 +331,9 @@ class EspnBridgeTests(unittest.TestCase):
             self.assertEqual(len(first["top_overall"]), 5)
             self.assertIn("components", first["recommended_player"])
             self.assertIn("contributions", first["recommended_player"])
+            self.assertIn("espn_rank", first["recommended_player"])
+            self.assertIn("consensus_rank", first["recommended_player"])
+            self.assertIn("market_disagreement", first["recommended_player"])
             self.assertTrue(path.exists())
 
             selected_id = state["pending_espn_player_id"]

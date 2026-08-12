@@ -19,10 +19,11 @@ class StrategyWeights:
     market_quality: float = 0.22
     market_dominance: float = 0.35
     reach_penalty: float = 0.22
+    market_disagreement: float = 0.08
     vor: float = 0.12
     scarcity: float = 0.06
     tier_drop: float = 0.05
-    te_urgency: float = 0.08
+    te_urgency: float = 0.16
     roster_need: float = 0.16
     position_value: float = 0.16
     lineup_quality: float = 0.18
@@ -55,6 +56,7 @@ class DraftEngine:
     # and deeper RB/WR benches push replacement much farther down those pools.
     replacement_rank = {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12}
     strong_starter_market = {"QB": 90, "TE": 60}
+    espn_market_weight = 0.70
 
     def __init__(
         self,
@@ -94,8 +96,35 @@ class DraftEngine:
         return {key: (value - low) / (high - low) for key, value in values.items()}
 
     @staticmethod
-    def _market_rank(player: Player) -> float:
-        return player.signals.get("consensus_rank", player.adp)
+    def _consensus_rank(player: Player) -> float | None:
+        value = player.signals.get("consensus_rank")
+        if not isinstance(value, (int, float)):
+            return None
+        rank = float(value)
+        return rank if math.isfinite(rank) and rank > 0 else None
+
+    @classmethod
+    def _market_rank(cls, player: Player) -> float:
+        """Blend ESPN's current room rank with external expert consensus.
+
+        ESPN is the freshest source for the exact room being drafted. External
+        ECR remains useful, but it cannot single-handedly turn a player ranked
+        multiple rounds later by ESPN into the best available selection.
+        """
+        consensus_rank = cls._consensus_rank(player)
+        if consensus_rank is None:
+            return float(player.adp)
+        return (
+            float(player.adp) * cls.espn_market_weight
+            + consensus_rank * (1 - cls.espn_market_weight)
+        )
+
+    @classmethod
+    def _market_disagreement(cls, player: Player) -> float:
+        consensus_rank = cls._consensus_rank(player)
+        if consensus_rank is None:
+            return 0.0
+        return min(abs(float(player.adp) - consensus_rank) / 50, 1.0)
 
     @staticmethod
     def _market_reach_limit(round_number: int) -> int:
@@ -372,9 +401,9 @@ class DraftEngine:
             required.add("RB")
         if round_number >= 3 and counts["WR"] < 1:
             required.add("WR")
-        if round_number >= 6 and counts["RB"] < 2:
+        if round_number >= 5 and counts["RB"] < 2:
             required.add("RB")
-        if round_number >= 6 and counts["WR"] < 2:
+        if round_number >= 5 and counts["WR"] < 2:
             required.add("WR")
         if round_number >= 8 and counts["RB"] >= counts["WR"] + 2 and counts["WR"] < 5:
             required.add("WR")
@@ -419,12 +448,15 @@ class DraftEngine:
     ) -> float:
         if player.position != "TE" or any(item.position == "TE" for item in roster):
             return 0.0
-        if round_number not in {8, 9, 10, 11, 12}:
+        if round_number not in {7, 8, 9, 10, 11, 12}:
             return 0.0
-        stage = {8: 0.4, 9: 0.55, 10: 0.7, 11: 0.85, 12: 1.0}[round_number]
-        # Escalate as the deadline approaches, with extra weight for the last
-        # player before a meaningful projected tier drop.
-        return stage * (0.65 + 0.35 * tier_drop)
+        stage = {7: 0.2, 8: 0.45, 9: 0.7, 10: 1.0, 11: 1.0, 12: 1.0}[
+            round_number
+        ]
+        # Start with a small round-seven warning, then strongly price the final
+        # useful starter tier by round ten. A nearby projection cliff increases
+        # urgency without forcing a TE who is outside the market reach guard.
+        return stage * (0.75 + 0.25 * tier_drop)
 
     @staticmethod
     def _rookie_camp_role(player: Player) -> float:
@@ -694,10 +726,10 @@ class DraftEngine:
             market_rank = self._market_rank(player)
             market_dominance = 1.0 if self._market_dominated(player, eligible) else 0.0
             reach_penalty = self._reach_penalty(player, current_pick, reach_limit)
+            market_disagreement = self._market_disagreement(player)
             exposure = exposure_rates.get(player.external_ids.get("espn", ""), 0.0)
-            blended_rank = market_rank * 0.7 + player.adp * 0.3
             uncertainty = min(player.signals.get("consensus_sd", 8.0) / 30, 1.0)
-            gone = 1 / (1 + math.exp((blended_rank - (current_pick + picks_away * 0.55)) / (6.5 + 4 * uncertainty)))
+            gone = 1 / (1 + math.exp((market_rank - (current_pick + picks_away * 0.55)) / (6.5 + 4 * uncertainty)))
             roster_need = self._roster_need(player, roster, round_number, current_pick)
             position_value = self._position_value(player, roster, round_number)
             lineup_quality = self._lineup_quality(player, roster)
@@ -730,6 +762,7 @@ class DraftEngine:
                 "market_quality": components["market_quality"][player.player_id],
                 "market_dominance": market_dominance,
                 "reach_penalty": reach_penalty,
+                "market_disagreement": market_disagreement,
                 "vor": components["vor"][player.player_id],
                 "scarcity": components["scarcity"][player.player_id],
                 "tier_drop": components["tier_drop"][player.player_id],
@@ -754,6 +787,7 @@ class DraftEngine:
             penalty_components = {
                 "market_dominance",
                 "reach_penalty",
+                "market_disagreement",
                 "exposure_penalty",
                 "bench_opportunity_cost",
                 "portfolio_concentration",
@@ -769,7 +803,14 @@ class DraftEngine:
                 {
                     **player.as_dict(),
                     "projected_points": round(points[player.player_id], 1),
+                    "espn_rank": round(float(player.adp), 1),
+                    "consensus_rank": (
+                        round(self._consensus_rank(player), 1)
+                        if self._consensus_rank(player) is not None
+                        else None
+                    ),
                     "market_rank": round(market_rank, 1),
+                    "market_disagreement": round(market_disagreement, 3),
                     "market_reach": round(max(0.0, market_rank - current_pick), 1),
                     "market_reach_limit": reach_limit,
                     "draft_score": round(score, 4),
