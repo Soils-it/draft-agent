@@ -16,7 +16,7 @@ and rejects malformed snapshots or duplicate player IDs.
 
 The available set is limited to ESPN's top 350 editorial draft ranks. This
 avoids flooding the recommendation engine with hundreds of undrafted free
-agents while retaining more than a full 12-team, 16-round draft pool. The local
+agents while retaining more than a full 12-team, 17-round draft pool. The local
 agent precomputes five choices for the next user pick even when the user is not
 currently on the clock.
 

@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .config import LeagueConfig
+from .config import (
+    LEAGUE_PROFILES,
+    LeagueConfig,
+    league_config_for_profile,
+    league_profiles_payload,
+)
 from .data import demo_players
 from .espn import EspnDraftBridge
 from .models import Player
@@ -48,6 +53,7 @@ PLAYER_PREFERENCES: dict[str, object] = {
     "mock_exposure_limit": 0,
 }
 PREFERENCE_PATH = Path(".cache/player_preferences.json")
+RUNTIME_SETTINGS_PATH = Path(".cache/draft_settings.json")
 DECISION_LOG_PATH = Path(".cache/draft_decisions.json")
 ESPN_BRIDGE = EspnDraftBridge(DECISION_LOG_PATH)
 
@@ -295,10 +301,13 @@ def _state_payload() -> dict[str, object]:
     source_health = _data_health()
     espn_state = _espn_state_payload(source_health)
     payload["settings"] = {
+        "league_profile": SESSION.config.profile_id,
+        "roster_size": SESSION.config.roster_size,
         "user_slot": SESSION.config.user_slot,
         "override_seconds": OVERRIDE_SECONDS,
         "simulation_samples": SESSION.engine.simulation_samples,
     }
+    payload["league_profiles"] = league_profiles_payload()
     payload["data_source"] = {
         **DATA_SOURCE,
         "freshness": source_health["sources"],
@@ -325,10 +334,73 @@ def validate_settings(
     return slot, seconds, samples
 
 
-def apply_settings(values: dict[str, Any]) -> None:
+def _validate_profile(values: dict[str, Any], current_profile: str) -> str:
+    profile_id = str(values.get("league_profile", current_profile)).strip()
+    if profile_id not in LEAGUE_PROFILES:
+        raise ValueError("league_profile is not supported")
+    return profile_id
+
+
+def _runtime_settings_payload() -> dict[str, object]:
+    return {
+        "league_profile": SESSION.config.profile_id,
+        "user_slot": SESSION.config.user_slot,
+        "override_seconds": OVERRIDE_SECONDS,
+        "simulation_samples": SESSION.engine.simulation_samples,
+    }
+
+
+def _save_runtime_settings() -> None:
+    RUNTIME_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = RUNTIME_SETTINGS_PATH.with_suffix(
+        RUNTIME_SETTINGS_PATH.suffix + ".tmp"
+    )
+    temporary.write_text(
+        json.dumps(_runtime_settings_payload(), indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(RUNTIME_SETTINGS_PATH)
+
+
+def _load_runtime_settings() -> dict[str, object] | None:
+    try:
+        if (
+            not RUNTIME_SETTINGS_PATH.exists()
+            or RUNTIME_SETTINGS_PATH.stat().st_size > 32_000
+        ):
+            return None
+        payload = json.loads(RUNTIME_SETTINGS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        profile_id = _validate_profile(payload, SESSION.config.profile_id)
+        slot, seconds, samples = validate_settings(
+            payload,
+            SESSION.config.user_slot,
+            OVERRIDE_SECONDS,
+            SESSION.config.teams,
+            SESSION.engine.simulation_samples,
+        )
+        return {
+            "league_profile": profile_id,
+            "user_slot": slot,
+            "override_seconds": seconds,
+            "simulation_samples": samples,
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def apply_settings(
+    values: dict[str, Any],
+    *,
+    persist: bool = True,
+    invalidate: bool = True,
+) -> None:
     global OVERRIDE_SECONDS, SIMULATION_SAMPLES
+    previous_profile = SESSION.config.profile_id
     previous_slot = SESSION.config.user_slot
     previous_samples = SESSION.engine.simulation_samples
+    profile_id = _validate_profile(values, previous_profile)
     slot, OVERRIDE_SECONDS, SIMULATION_SAMPLES = validate_settings(
         values,
         previous_slot,
@@ -336,11 +408,25 @@ def apply_settings(values: dict[str, Any]) -> None:
         SESSION.config.teams,
         previous_samples,
     )
-    if slot != previous_slot:
+    if profile_id != previous_profile:
+        _replace_session(
+            config=league_config_for_profile(
+                profile_id,
+                user_slot=slot,
+                teams=SESSION.config.teams,
+            )
+        )
+    elif slot != previous_slot:
         _replace_session(config=replace(SESSION.config, user_slot=slot))
     else:
         _configure_session(SESSION)
-    if slot != previous_slot or SIMULATION_SAMPLES != previous_samples:
+    if persist:
+        _save_runtime_settings()
+    if invalidate and (
+        profile_id != previous_profile
+        or slot != previous_slot
+        or SIMULATION_SAMPLES != previous_samples
+    ):
         ESPN_BRIDGE.invalidate("Draft settings changed; waiting for a fresh ESPN snapshot.")
 
 
@@ -468,6 +554,9 @@ def main() -> None:
     saved_preferences = _load_preferences()
     if saved_preferences is not None:
         PLAYER_PREFERENCES = saved_preferences
+    saved_settings = _load_runtime_settings()
+    if saved_settings is not None:
+        apply_settings(saved_settings, persist=False, invalidate=False)
     _restore_cached_data()
     _configure_session(SESSION)
     ESPN_BRIDGE.configure_mock_exposure(

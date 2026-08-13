@@ -52,8 +52,8 @@ class StrategyWeights:
 
 
 class DraftEngine:
-    # A 12-team, 1-QB league replaces quarterbacks near QB12, while the FLEX
-    # and deeper RB/WR benches push replacement much farther down those pools.
+    # The standard profile replaces quarterbacks near QB12. Superflex moves
+    # that baseline to QB30 because 24 can start and others are held for depth.
     replacement_rank = {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12}
     strong_starter_market = {"QB": 90, "TE": 60}
     espn_market_weight = 0.70
@@ -65,6 +65,9 @@ class DraftEngine:
         simulation_samples: int = 200,
     ):
         self.config = config
+        self.replacement_rank = dict(type(self).replacement_rank)
+        if config.is_superflex:
+            self.replacement_rank["QB"] = 30
         self.weights = weights or StrategyWeights()
         self.simulation_samples = simulation_samples
         self.prefer_names: set[str] = set()
@@ -126,6 +129,38 @@ class DraftEngine:
             return 0.0
         return min(abs(float(player.adp) - consensus_rank) / 50, 1.0)
 
+    def _draft_market_rank(self, player: Player) -> float:
+        """Return a profile-specific overall market rank.
+
+        The free consensus feed carries a separate Superflex/OP overall rank,
+        which is preferred for every position. If it is missing, ESPN's stable
+        QB position order places QB1-QB30 on a fallback curve. The standard
+        profile always keeps its original blended rank unchanged.
+        """
+        base_rank = self._market_rank(player)
+        if not self.config.is_superflex:
+            return base_rank
+        superflex_rank = player.signals.get("superflex_rank")
+        if (
+            isinstance(superflex_rank, (int, float))
+            and math.isfinite(superflex_rank)
+            and superflex_rank > 0
+        ):
+            return float(superflex_rank)
+        if player.position != "QB":
+            return base_rank
+        position_rank = player.signals.get("espn_position_rank")
+        if not isinstance(position_rank, (int, float)) or position_rank <= 0:
+            return max(1.0, base_rank * 0.72 - 25)
+        rank = float(position_rank)
+        if rank <= 3:
+            return 1 + (rank - 1) * 2
+        if rank <= 12:
+            return 7 + (rank - 4) * 3.25
+        if rank <= 24:
+            return 38 + (rank - 13) * 5
+        return 101 + (rank - 25) * 8
+
     @staticmethod
     def _market_reach_limit(round_number: int) -> int:
         if round_number == 1:
@@ -138,27 +173,25 @@ class DraftEngine:
             return 20
         return 35
 
-    @staticmethod
     def _pick_relative_consensus(
+        self,
         player: Player,
         current_pick: int,
         reach_limit: int,
     ) -> float:
         """Score market value around this pick instead of the entire pool."""
-        market_rank = DraftEngine._market_rank(player)
+        market_rank = self._draft_market_rank(player)
         return min(
             1.0,
             max(0.0, 0.5 + (current_pick - market_rank) / (2 * reach_limit)),
         )
 
-    @staticmethod
-    def _reach_penalty(player: Player, current_pick: int, reach_limit: int) -> float:
-        reach = max(0.0, DraftEngine._market_rank(player) - current_pick)
+    def _reach_penalty(self, player: Player, current_pick: int, reach_limit: int) -> float:
+        reach = max(0.0, self._draft_market_rank(player) - current_pick)
         return min(1.0, reach / reach_limit)
 
-    @staticmethod
-    def _market_quality(player: Player, best_market_rank: float) -> float:
-        rank_gap = max(0.0, DraftEngine._market_rank(player) - best_market_rank)
+    def _market_quality(self, player: Player, best_market_rank: float) -> float:
+        rank_gap = max(0.0, self._draft_market_rank(player) - best_market_rank)
         return math.exp(-rank_gap / 12)
 
     def _preference(self, player: Player) -> float:
@@ -184,7 +217,7 @@ class DraftEngine:
             or counts["WR"] == 0
         ):
             return 0.0
-        reach = max(0.0, self._market_rank(player) - current_pick)
+        reach = max(0.0, self._draft_market_rank(player) - current_pick)
         if reach > 10:
             return 0.0
         return 1.0 - reach / 20
@@ -193,11 +226,11 @@ class DraftEngine:
         """Reject a lower-market peer unless its projection is materially better."""
         if self._preference(player) > 0:
             return False
-        player_rank = self._market_rank(player)
+        player_rank = self._draft_market_rank(player)
         player_points = projected_points(player)
         return any(
             peer.position == player.position
-            and self._market_rank(peer) <= player_rank - 5
+            and self._draft_market_rank(peer) <= player_rank - 5
             and projected_points(peer) >= player_points * 0.9
             and self._availability(peer) >= self._availability(player)
             and self._preference(peer) >= 0
@@ -214,18 +247,18 @@ class DraftEngine:
         if position not in self.strong_starter_market:
             return False
         incumbents = [item for item in roster if item.position == position]
-        if len(incumbents) < self.config.starters[position]:
+        if len(incumbents) < self.config.position_starters(position):
             return False
         if self._preference(player) > 0:
             return False
-        incumbent = min(incumbents, key=self._market_rank)
-        incumbent_market_rank = self._market_rank(incumbent)
+        incumbent = min(incumbents, key=self._draft_market_rank)
+        incumbent_market_rank = self._draft_market_rank(incumbent)
         if position == "TE":
             incumbent_points = projected_points(incumbent)
             candidate_points = projected_points(player)
             starter_is_injured = self._availability(incumbent) < 0.86
             material_upgrade = (
-                self._market_rank(player) <= incumbent_market_rank - 12
+                self._draft_market_rank(player) <= incumbent_market_rank - 12
                 or (
                     incumbent_points > 0
                     and candidate_points >= incumbent_points * 1.10
@@ -237,12 +270,26 @@ class DraftEngine:
                 return True
             return not material_upgrade
 
-        # In a 1-QB league, a healthy top-90 overall starter makes QB2 an
-        # inefficient bench use unless the candidate is a real upgrade. A weak
-        # or injured starter may still justify late insurance.
+        if self.config.is_superflex:
+            weakest = max(incumbents, key=self._draft_market_rank)
+            weakest_rank = self._draft_market_rank(weakest)
+            weakest_points = projected_points(weakest)
+            candidate_points = projected_points(player)
+            material_upgrade = (
+                self._draft_market_rank(player) <= weakest_rank - 8
+                or (
+                    weakest_points > 0
+                    and candidate_points >= weakest_points * 1.03
+                )
+            )
+            injured_starter = any(self._availability(item) < 0.86 for item in incumbents)
+            return not (injured_starter or material_upgrade)
+
+        # In the standard profile, a healthy top-90 starter makes QB2 an
+        # inefficient bench use unless the candidate is a real upgrade.
         starter_is_weak = incumbent_market_rank > self.strong_starter_market["QB"]
         starter_is_injured = self._availability(incumbent) < 0.86
-        candidate_market_rank = self._market_rank(player)
+        candidate_market_rank = self._draft_market_rank(player)
         incumbent_points = projected_points(incumbent)
         candidate_points = projected_points(player)
         material_upgrade = (
@@ -254,8 +301,7 @@ class DraftEngine:
         )
         return not (starter_is_weak or starter_is_injured or material_upgrade)
 
-    @staticmethod
-    def _skill_lineup_points(roster: list[Player]) -> tuple[float, list[float]]:
+    def _skill_lineup_points(self, roster: list[Player]) -> tuple[float, list[float]]:
         by_position = {
             position: sorted(
                 (projected_points(item) for item in roster if item.position == position),
@@ -263,16 +309,26 @@ class DraftEngine:
             )
             for position in ("RB", "WR")
         }
-        starters = by_position["RB"][:2] + by_position["WR"][:2]
-        flex_pool = by_position["RB"][2:] + by_position["WR"][2:]
-        if flex_pool:
-            starters.append(max(flex_pool))
+        starters = (
+            by_position["RB"][: self.config.starters["RB"]]
+            + by_position["WR"][: self.config.starters["WR"]]
+        )
+        flex_pool = (
+            by_position["RB"][self.config.starters["RB"] :]
+            + by_position["WR"][self.config.starters["WR"] :]
+        )
+        for _ in range(self.config.flex_slots):
+            if not flex_pool:
+                break
+            best = max(flex_pool)
+            starters.append(best)
+            flex_pool.remove(best)
         return sum(starters), starters
 
     def _lineup_quality(self, player: Player, roster: list[Player]) -> float:
         """Measure whether this pick improves starters or only adds redundancy."""
         same_position = [item for item in roster if item.position == player.position]
-        required = self.config.starters[player.position]
+        required = self.config.position_starters(player.position)
         if len(same_position) < required:
             return 1.0
 
@@ -294,7 +350,7 @@ class DraftEngine:
         if candidate_points > incumbent_points:
             return 1.0
         if player.position in {"QB", "TE"}:
-            best_market_rank = min(self._market_rank(item) for item in same_position)
+            best_market_rank = min(self._draft_market_rank(item) for item in same_position)
             threshold = self.strong_starter_market[player.position]
             weakness = min(1.0, max(0.0, (best_market_rank - threshold) / threshold))
             ratio = min(candidate_points / max(incumbent_points, 1.0), 1.0)
@@ -325,7 +381,7 @@ class DraftEngine:
         opponents_before_next = max(next_pick - current_pick - 1, 0)
         wait_pressure = min(opponents_before_next / maximum_wait, 1.0)
         core_open = any(
-            counts[position] < self.config.starters[position]
+            counts[position] < self.config.position_starters(position)
             for position in ("QB", "RB", "WR", "TE")
         )
         late_pressure = min(max((round_number - 7) / 6, 0.0), 1.0)
@@ -347,19 +403,28 @@ class DraftEngine:
         position = player.position
         if counts[position] >= self.config.position_caps[position]:
             return -1.0
-        # This league starts one QB and one TE. A second one is a late bench
-        # option, never a reason to pass on starting RB/WR talent in rounds 1-12.
         if position == "QB":
+            if self.config.is_superflex:
+                if counts[position] < self.config.position_starters("QB"):
+                    return 1.0
+                if round_number < 9:
+                    return -1.0
+                if (
+                    self._preference(player) <= 0
+                    and current_pick - self._draft_market_rank(player) < 12
+                ):
+                    return -1.0
+                if self._starter_blocks_backup(player, roster):
+                    return -1.0
+                return 0.45
             if counts[position] and round_number < 13:
                 return -1.0
-            # A second quarterback is optional in a 1-QB league. Only spend the
-            # roster spot when the market has let one fall at least 20 picks.
-            if counts[position] and current_pick - self._market_rank(player) < 20:
+            if counts[position] and current_pick - self._draft_market_rank(player) < 20:
                 return -1.0
             if counts[position] and self._starter_blocks_backup(player, roster):
                 return -1.0
             if not counts[position] and round_number < 4:
-                market_rank = self._market_rank(player)
+                market_rank = self._draft_market_rank(player)
                 early_value = market_rank <= 36 and current_pick - market_rank >= 12
                 if not early_value:
                     return -1.0
@@ -381,8 +446,13 @@ class DraftEngine:
             if counts[position] == 0 and round_number < 4:
                 return -1.0
         if position in {"K", "DST"}:
-            return 1.25 if round_number >= 15 and counts[position] == 0 else -1.0
-        required = self.config.starters[position]
+            specialist_round = self.config.roster_size - 1
+            return (
+                1.25
+                if round_number >= specialist_round and counts[position] == 0
+                else -1.0
+            )
+        required = self.config.position_starters(position)
         if counts[position] < required:
             return 1.0
         if position in {"RB", "WR"} and counts["RB"] + counts["WR"] < 5:
@@ -409,16 +479,20 @@ class DraftEngine:
             required.add("WR")
         if round_number >= 8 and counts["WR"] >= counts["RB"] + 3 and counts["RB"] < 5:
             required.add("RB")
-        if round_number >= 10 and counts["QB"] < 1:
+        if self.config.is_superflex:
+            if round_number >= 3 and counts["QB"] < 1:
+                required.add("QB")
+            if round_number >= 7 and counts["QB"] < 2:
+                required.add("QB")
+        elif round_number >= 10 and counts["QB"] < 1:
             required.add("QB")
-        if round_number >= 13 and counts["TE"] < 1:
+        if round_number >= self.config.roster_size - 3 and counts["TE"] < 1:
             required.add("TE")
-        if round_number >= 15:
+        if round_number >= self.config.roster_size - 1:
             required.update(position for position in ("K", "DST") if counts[position] < 1)
         return required
 
-    @staticmethod
-    def _position_value(player: Player, roster: list[Player], round_number: int) -> float:
+    def _position_value(self, player: Player, roster: list[Player], round_number: int) -> float:
         counts = Counter(item.position for item in roster)
         position = player.position
         if position == "RB":
@@ -434,6 +508,12 @@ class DraftEngine:
                 return 0.25
             return 0.78 if round_number <= 8 else 0.62
         if position == "QB":
+            if self.config.is_superflex:
+                if counts[position] == 0:
+                    return 1.0
+                if counts[position] == 1:
+                    return 0.96 if round_number <= 7 else 0.88
+                return 0.35
             return 0.62 if counts[position] == 0 else 0.12
         if position == "TE":
             return 0.6 if counts[position] == 0 else 0.12
@@ -570,13 +650,13 @@ class DraftEngine:
             for item in roster
             if item.position == "RB" and item.team.strip().upper() not in {"", "FA"}
         }
-        player_rank = self._market_rank(player)
+        player_rank = self._draft_market_rank(player)
         player_points = projected_points(player)
         close_independent = any(
             peer.position == "RB"
             and peer.player_id != player.player_id
             and peer.team.strip().upper() not in rostered_rb_teams
-            and abs(self._market_rank(peer) - player_rank) <= 5
+            and abs(self._draft_market_rank(peer) - player_rank) <= 5
             and projected_points(peer) >= player_points * 0.95
             and self._availability(peer) >= self._availability(player)
             and self._preference(peer) >= 0
@@ -629,11 +709,15 @@ class DraftEngine:
             required_in_range = [
                 player
                 for player in required_pool
-                if self._market_rank(player) - current_pick <= required_limit
+                if self._draft_market_rank(player) - current_pick <= required_limit
             ]
             if required_in_range:
                 eligible = required_in_range
-            elif round_number >= 13:
+            elif round_number >= 13 or (
+                self.config.is_superflex
+                and "QB" in required_positions
+                and round_number >= 7
+            ):
                 eligible = required_pool
         # Use consensus/ADP as a guardrail rather than letting a noisy model
         # component reach multiple rounds. Early RB/WR targets are soft when
@@ -641,7 +725,7 @@ class DraftEngine:
         market_eligible = [
             player
             for player in eligible
-            if self._market_rank(player) - current_pick <= reach_limit
+            if self._draft_market_rank(player) - current_pick <= reach_limit
         ]
         if market_eligible:
             eligible = market_eligible
@@ -693,7 +777,7 @@ class DraftEngine:
             for player in eligible
         }
         best_market_rank = min(
-            (self._market_rank(player) for player in eligible),
+            (self._draft_market_rank(player) for player in eligible),
             default=float(current_pick),
         )
         market_quality = {
@@ -723,7 +807,7 @@ class DraftEngine:
         picks_away = max(next_pick - current_pick, 1)
         for player in eligible:
             # Logistic approximation: earlier ADP and a longer wait increase the chance gone.
-            market_rank = self._market_rank(player)
+            market_rank = self._draft_market_rank(player)
             market_dominance = 1.0 if self._market_dominated(player, eligible) else 0.0
             reach_penalty = self._reach_penalty(player, current_pick, reach_limit)
             market_disagreement = self._market_disagreement(player)
@@ -809,6 +893,7 @@ class DraftEngine:
                         if self._consensus_rank(player) is not None
                         else None
                     ),
+                    "base_market_rank": round(self._market_rank(player), 1),
                     "market_rank": round(market_rank, 1),
                     "market_disagreement": round(market_disagreement, 3),
                     "market_reach": round(max(0.0, market_rank - current_pick), 1),
@@ -832,6 +917,14 @@ class DraftEngine:
             current_pick,
             next_pick,
             self.simulation_samples,
+            market_ranks=(
+                {
+                    player.player_id: self._draft_market_rank(player)
+                    for player in eligible
+                }
+                if self.config.is_superflex
+                else None
+            ),
         )
         future_values = self._normalize(
             {player_id: value.expected_roster_value for player_id, value in simulation.items()}

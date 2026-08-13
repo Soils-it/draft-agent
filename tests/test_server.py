@@ -238,6 +238,9 @@ class ServerDataSafetyTests(unittest.TestCase):
                         patch.object(server, "_load_preferences", return_value=None)
                     )
                     stack.enter_context(
+                        patch.object(server, "_load_runtime_settings", return_value=None)
+                    )
+                    stack.enter_context(
                         patch.object(
                             server, "ThreadingHTTPServer", return_value=http_server
                         )

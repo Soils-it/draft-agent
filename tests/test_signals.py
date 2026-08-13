@@ -31,6 +31,23 @@ class SignalTests(unittest.TestCase):
         self.assertEqual(records[0].external_ids["espn"], "456")
         self.assertEqual(records[0].values["consensus_sd"], 4)
 
+    def test_keeps_superflex_consensus_separate_from_standard_ecr(self):
+        header = "page_type,player,id,pos,team,ecr,sd,best,worst,rank_delta,bye,scrape_date\n"
+        overall = [
+            f"redraft-overall,Player {number},fp-{number},WR,T{number},{number},4,1,200,0,8,2026-08-01\n"
+            for number in range(1, 101)
+        ]
+        superflex = (
+            "redraft-op,Player 1,fp-1,WR,T1,17,5,12,24,2,8,2026-08-02\n"
+        )
+        records = parse_consensus_csv(header + "".join(overall) + superflex)
+        player = next(record for record in records if record.name == "Player 1")
+        self.assertEqual(player.values["consensus_rank"], 1)
+        self.assertEqual(player.values["superflex_rank"], 17)
+        self.assertEqual(player.values["superflex_sd"], 5)
+        self.assertEqual(player.context["consensus_date"], "2026-08-01")
+        self.assertEqual(player.context["superflex_date"], "2026-08-02")
+
     def test_merges_sleeper_context_and_trends(self):
         record = SignalRecord("Example", "DET", "WR", {"sleeper": "789"})
         merge_sleeper_data(

@@ -95,8 +95,11 @@ def parse_consensus_csv(
     content: str, crosswalk: dict[str, dict[str, str]] | None = None
 ) -> list[SignalRecord]:
     crosswalk = crosswalk or {}
+    rows = list(csv.DictReader(io.StringIO(content)))
     records: list[SignalRecord] = []
-    for row in csv.DictReader(io.StringIO(content)):
+    by_fantasypros_id: dict[str, list[SignalRecord]] = {}
+    by_identity: dict[tuple[str, str, str], list[SignalRecord]] = {}
+    for row in rows:
         if row.get("page_type") != "redraft-overall":
             continue
         name = str(row.get("player") or "").strip()
@@ -115,16 +118,60 @@ def parse_consensus_csv(
             value = _float(row.get(column))
             if value is not None:
                 values[source] = value
-        records.append(
-            SignalRecord(
-                name=name,
-                team=str(row.get("team") or row.get("tm") or "FA").upper(),
-                position=position,
-                external_ids=dict(crosswalk.get(str(row.get("id") or "").strip(), {})),
-                values=values,
-                context={"consensus_date": str(row.get("scrape_date") or "")},
-            )
+        fantasypros_id = str(row.get("id") or "").strip()
+        team = str(row.get("team") or row.get("tm") or "FA").upper()
+        record = SignalRecord(
+            name=name,
+            team=team,
+            position=position,
+            external_ids=dict(crosswalk.get(fantasypros_id, {})),
+            values=values,
+            context={"consensus_date": str(row.get("scrape_date") or "")},
         )
+        records.append(record)
+        if fantasypros_id:
+            by_fantasypros_id.setdefault(fantasypros_id, []).append(record)
+        by_identity.setdefault((normalize_name(name), position, team), []).append(record)
+
+    # DynastyProcess's redraft-op page is the free Superflex/OP consensus. Keep
+    # it beside the normal 1-QB ECR so changing league profiles never destroys
+    # or repurposes the standard ranking.
+    for row in rows:
+        if row.get("page_type") != "redraft-op":
+            continue
+        name = str(row.get("player") or "").strip()
+        position = str(row.get("pos") or "").upper().replace("D/ST", "DST")
+        rank = _float(row.get("ecr"))
+        if not name or position not in {"QB", "RB", "WR", "TE", "K", "DST"} or rank is None:
+            continue
+        fantasypros_id = str(row.get("id") or "").strip()
+        team = str(row.get("team") or row.get("tm") or "FA").upper()
+        candidates = by_fantasypros_id.get(fantasypros_id, [])
+        if not candidates:
+            candidates = by_identity.get((normalize_name(name), position, team), [])
+        record = candidates[0] if len(candidates) == 1 else None
+        if record is None:
+            record = SignalRecord(
+                name=name,
+                team=team,
+                position=position,
+                external_ids=dict(crosswalk.get(fantasypros_id, {})),
+            )
+            records.append(record)
+            if fantasypros_id:
+                by_fantasypros_id.setdefault(fantasypros_id, []).append(record)
+            by_identity.setdefault((normalize_name(name), position, team), []).append(record)
+        record.values["superflex_rank"] = rank
+        for source, column in (
+            ("superflex_sd", "sd"),
+            ("superflex_best", "best"),
+            ("superflex_worst", "worst"),
+            ("superflex_rank_delta", "rank_delta"),
+        ):
+            value = _float(row.get(column))
+            if value is not None:
+                record.values[source] = value
+        record.context["superflex_date"] = str(row.get("scrape_date") or "")
     if len(records) < 100:
         raise ValueError("consensus feed did not contain enough redraft players")
     return records

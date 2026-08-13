@@ -24,9 +24,27 @@ def _market_rank(player: Player) -> float:
     return player.signals.get("consensus_rank", player.adp)
 
 
-def _weighted_pick(rng: random.Random, pool: list[Player], pick_number: int) -> int:
+def _weighted_pick(
+    rng: random.Random,
+    pool: list[Player],
+    pick_number: int,
+    market_ranks: dict[str, float] | None = None,
+) -> int:
     weights = [
-        math.exp(max(-4.0, min(4.0, (pick_number + 8 - _market_rank(player)) / 18)))
+        math.exp(
+            max(
+                -4.0,
+                min(
+                    4.0,
+                    (
+                        pick_number
+                        + 8
+                        - (market_ranks or {}).get(player.player_id, _market_rank(player))
+                    )
+                    / 18,
+                ),
+            )
+        )
         for player in pool
     ]
     target = rng.random() * sum(weights)
@@ -45,6 +63,7 @@ def simulate_turn_value(
     next_pick: int,
     samples: int = 200,
     candidate_limit: int = 24,
+    market_ranks: dict[str, float] | None = None,
 ) -> dict[str, SimulationResult]:
     """Estimate market survival and two-pick roster value with deterministic trials."""
     if samples <= 0 or not players:
@@ -52,7 +71,10 @@ def simulate_turn_value(
     opponents = max(0, next_pick - current_pick - 1)
     candidates = sorted(
         players,
-        key=lambda player: (_market_rank(player), -points[player.player_id]),
+        key=lambda player: (
+            (market_ranks or {}).get(player.player_id, _market_rank(player)),
+            -points[player.player_id],
+        ),
     )[:candidate_limit]
     rng = random.Random(_seed(players, current_pick, next_pick, samples))
     survived = {player.player_id: 0 for player in candidates}
@@ -62,7 +84,14 @@ def simulate_turn_value(
         drafted: set[str] = set()
         pool = list(players)
         for offset in range(min(opponents, len(pool))):
-            chosen = pool.pop(_weighted_pick(rng, pool, current_pick + offset + 1))
+            chosen = pool.pop(
+                _weighted_pick(
+                    rng,
+                    pool,
+                    current_pick + offset + 1,
+                    market_ranks,
+                )
+            )
             drafted.add(chosen.player_id)
         remaining = [player for player in players if player.player_id not in drafted]
         for candidate in candidates:

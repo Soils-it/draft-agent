@@ -78,8 +78,21 @@ class DraftSession:
             available = self.available()
             if not available:
                 return
-            # Deterministic mock opponents select the lowest remaining ADP.
-            player = min(available, key=lambda item: (item.adp, -item.upside, item.player_id))
+            # Deterministic mock opponents use the active profile's market. This
+            # matters in Superflex, where the normal ESPN overall rank materially
+            # understates how quickly quarterbacks leave the board.
+            player = min(
+                available,
+                key=lambda item: (
+                    (
+                        self.engine._draft_market_rank(item)
+                        if self.config.is_superflex
+                        else item.adp
+                    ),
+                    -item.upside,
+                    item.player_id,
+                ),
+            )
             self.picks.append(
                 Pick(self.current_pick, self.team_for_pick(self.current_pick), player.player_id, "opponent")
             )

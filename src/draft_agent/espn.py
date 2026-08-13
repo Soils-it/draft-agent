@@ -141,6 +141,7 @@ class EspnDraftBridge:
             "projected_points": candidate.get("projected_points"),
             "espn_rank": candidate.get("espn_rank"),
             "consensus_rank": candidate.get("consensus_rank"),
+            "base_market_rank": candidate.get("base_market_rank"),
             "market_rank": candidate.get("market_rank"),
             "market_reach": candidate.get("market_reach"),
             "market_disagreement": candidate.get("market_disagreement"),
@@ -185,10 +186,13 @@ class EspnDraftBridge:
             if not group:
                 incumbents[position] = None
                 continue
-            best = min(group, key=engine._market_rank)
+            best = min(group, key=engine._draft_market_rank)
             incumbents[position] = self._basic_player(best)
         return {
             "round": round_number,
+            "league_profile": engine.config.profile_id,
+            "roster_size": engine.config.roster_size,
+            "superflex_slots": engine.config.superflex_slots,
             "required_positions": sorted(engine._required_positions(roster, round_number)),
             "market_reach_limit": engine._market_reach_limit(round_number),
             "position_counts": counts,
@@ -201,11 +205,12 @@ class EspnDraftBridge:
         position: str,
         available: list[Player],
         rules: dict[str, object],
+        engine: DraftEngine,
     ) -> dict[str, object]:
         candidates = [item for item in available if item.position == position]
         if not candidates:
             return {"status": "unavailable", "reason": "No mapped player is available."}
-        raw = min(candidates, key=DraftEngine._market_rank)
+        raw = min(candidates, key=engine._draft_market_rank)
         counts = dict(rules["position_counts"])
         caps = dict(rules["position_caps"])
         required = list(rules["required_positions"])
@@ -214,9 +219,24 @@ class EspnDraftBridge:
             reason = "Position cap reached."
         elif required and position not in required:
             reason = f"Deferred while {', '.join(required)} is required."
-        elif position in {"K", "DST"} and round_number < 15:
-            reason = "Specialists are reserved for rounds 15-16."
-        elif position == "QB" and counts[position] and round_number < 13:
+        elif position in {"K", "DST"} and round_number < engine.config.roster_size - 1:
+            reason = (
+                "Specialists are reserved for the final two rounds "
+                f"({engine.config.roster_size - 1}-{engine.config.roster_size})."
+            )
+        elif (
+            position == "QB"
+            and engine.config.is_superflex
+            and counts[position] >= engine.config.position_starters("QB")
+            and round_number < 9
+        ):
+            reason = "A third quarterback is reserved until round 9 in Superflex."
+        elif (
+            position == "QB"
+            and not engine.config.is_superflex
+            and counts[position]
+            and round_number < 13
+        ):
             reason = "Backup QB is blocked before round 13."
         elif position == "TE" and counts[position] and round_number < 13:
             reason = "Backup TE is blocked before round 13."
@@ -306,7 +326,7 @@ class EspnDraftBridge:
                 top_by_position[position] = (
                     self._compact_candidate(candidate)
                     if candidate is not None
-                    else self._blocked_position(position, available, rules)
+                    else self._blocked_position(position, available, rules, engine)
                 )
             record = {
                 "key": key,
@@ -317,6 +337,8 @@ class EspnDraftBridge:
                 "round": int(rules["round"]),
                 "user_slot": user_slot,
                 "teams": engine.config.teams,
+                "league_profile": engine.config.profile_id,
+                "roster_size": engine.config.roster_size,
                 "status": "pending",
                 "on_clock_seen": bool(on_clock or (existing or {}).get("on_clock_seen")),
                 "created_at": existing.get("created_at", now) if existing else now,
@@ -410,7 +432,6 @@ class EspnDraftBridge:
     def mock_exposure_summary(
         self,
         max_drafts: int = 12,
-        roster_size: int = 16,
     ) -> dict[str, object]:
         """Summarize repeated selections across recent completed mock drafts.
 
@@ -420,6 +441,7 @@ class EspnDraftBridge:
         """
         with self._audit_lock:
             rosters: dict[str, set[str]] = {}
+            target_sizes: dict[str, int] = {}
             player_details: dict[str, dict[str, object]] = {}
             last_seen: dict[str, int] = {}
             for index, entry in enumerate(self.decision_log):
@@ -436,6 +458,11 @@ class EspnDraftBridge:
                 if not draft_id or not player_id:
                     continue
                 rosters.setdefault(draft_id, set()).add(player_id)
+                try:
+                    target_size = int(entry.get("roster_size", 16))
+                except (TypeError, ValueError):
+                    target_size = 16
+                target_sizes[draft_id] = target_size if 1 <= target_size <= 30 else 16
                 last_seen[draft_id] = index
                 player_details[player_id] = {
                     "espn_id": player_id,
@@ -447,7 +474,7 @@ class EspnDraftBridge:
                 (
                     (last_seen[draft_id], draft_id, player_ids)
                     for draft_id, player_ids in rosters.items()
-                    if len(player_ids) >= roster_size
+                    if len(player_ids) >= target_sizes.get(draft_id, 16)
                 ),
                 key=lambda item: item[0],
             )[-max_drafts:]
@@ -579,12 +606,37 @@ class EspnDraftBridge:
         }
 
     @staticmethod
+    def _with_position_ranks(players: list[Player]) -> list[Player]:
+        """Attach stable ESPN position order without changing the source rank."""
+        position_ranks: dict[str, int] = {}
+        ordered = sorted(players, key=lambda item: (item.position, item.adp, item.player_id))
+        ranks_by_id: dict[str, int] = {}
+        for player in ordered:
+            position_ranks[player.position] = position_ranks.get(player.position, 0) + 1
+            ranks_by_id[player.player_id] = position_ranks[player.position]
+        return [
+            replace(
+                player,
+                signals={
+                    **player.signals,
+                    "espn_position_rank": float(ranks_by_id[player.player_id]),
+                },
+            )
+            for player in players
+        ]
+
+    @staticmethod
     def _catalog(
         payload: dict[str, Any], historical: list[Player]
     ) -> tuple[list[Player], float, float]:
         raw_catalog = payload.get("player_catalog")
         if raw_catalog is None:
-            return historical, 1.0, sum(bool(player.signals) for player in historical) / max(len(historical), 1)
+            return (
+                EspnDraftBridge._with_position_ranks(historical),
+                1.0,
+                sum(bool(player.signals) for player in historical)
+                / max(len(historical), 1),
+            )
         if not isinstance(raw_catalog, list) or not raw_catalog:
             raise ValueError("player_catalog must be a non-empty list")
 
@@ -650,7 +702,12 @@ class EspnDraftBridge:
                         projected_points_override=projection,
                     )
                 )
-        return merged, enriched / len(merged), sum(bool(player.signals) for player in merged) / len(merged)
+        signal_rate = sum(bool(player.signals) for player in merged) / len(merged)
+        return (
+            EspnDraftBridge._with_position_ranks(merged),
+            enriched / len(merged),
+            signal_rate,
+        )
 
     def ingest(
         self,
@@ -713,9 +770,9 @@ class EspnDraftBridge:
         merged_players, enrichment_rate, signal_rate = self._catalog(payload, players)
         if signal_records:
             merged_players, _ = apply_signals(merged_players, signal_records)
-            signal_rate = sum(bool(player.signals) for player in merged_players) / len(
-                merged_players
-            )
+            signal_rate = sum(
+                "consensus_rank" in player.signals for player in merged_players
+            ) / len(merged_players)
         by_espn_id = {
             player.external_ids["espn"]: player
             for player in merged_players
@@ -791,6 +848,8 @@ class EspnDraftBridge:
             "overall_pick": overall_pick,
             "decision_pick": decision_pick,
             "user_slot": user_slot,
+            "league_profile": snapshot_config.profile_id,
+            "roster_size": snapshot_config.roster_size,
             "on_clock": on_clock,
             "is_mock": is_mock,
             "mock_history_count": mock_history_count,

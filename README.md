@@ -1,20 +1,30 @@
 # ESPN Fantasy Draft Agent
 
-Local-first draft assistant for a 12-team ESPN full-PPR redraft league. The
+Local-first draft assistant for 12-team ESPN full-PPR redraft leagues. The
 application provides a transparent ranking engine, snake-draft simulation, an
 adjustable strategy, free current/historical data, and a timed mock-draft
 auto-pick flow. Real-league automatic selection remains hard-blocked.
 
-## League configuration
+## League profiles
 
 - 12 teams, snake draft
-- 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX, 1 K, 1 D/ST
 - 7 bench slots and 1 IR slot
 - Full PPR with the custom passing, kicking, and D/ST scoring in
   `src/draft_agent/config.py`
 
-The 16 active roster slots are drafted. IR is not treated as an extra draft
-slot.
+The dashboard includes three selectable formats:
+
+- **12-team PPR · 1 QB** (default): 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX,
+  1 K, 1 D/ST, and 7 bench spots (16 drafted players).
+- **12-team PPR · Superflex**: Superflex replaces the normal FLEX, with the
+  same seven bench spots (16 drafted players).
+- **12-team PPR · FLEX + Superflex**: keeps the normal FLEX and adds a
+  Superflex spot, with seven bench spots (17 drafted players).
+
+All profiles share the same scoring, player projections, current news/injury
+signals, adjustable weights, and player preferences. Only roster construction,
+positional scarcity, replacement levels, and turn simulation change. IR is not
+treated as an extra draft slot.
 
 ## Run locally
 
@@ -26,10 +36,19 @@ $env:PYTHONPATH = "src"
 python -m draft_agent
 ```
 
-Open <http://127.0.0.1:8765>. The dashboard defaults to draft slot 6, which can
-be changed in Draft Settings. Opponent selections are simulated from ADP. Your
+Open <http://127.0.0.1:8765>. The dashboard defaults to the 1-QB profile and
+draft slot 6; both can be changed in Draft Settings. The selection is saved in
+`.cache/draft_settings.json` and restored with the server. Opponent selections
+are simulated from the active profile's market. Your
 recommended player is picked after a configurable countdown (20 seconds by
 default) unless you pause or choose an alternative.
+
+Choose the profile that exactly matches the ESPN roster before entering a mock
+or real draft, then click **Apply settings**. A profile change resets the local
+mock and deliberately invalidates the old ESPN snapshot. In the companion,
+click **Save and sync** once so the new model receives a fresh board. Profile
+detection is not inferred from ESPN yet because using the wrong 16- versus
+17-round layout would make turn ownership unsafe.
 
 On startup the server restores a complete, validated nflverse and free-signal
 cache without making a network request. Cache file modification times are used
@@ -43,7 +62,7 @@ preferences, and strategy weights.
 Use **Load complete free data** before opening a mock. The Player Data panel
 downloads the selected regular season from the
 [nflverse data releases](https://github.com/nflverse/nflverse-data/releases).
-It then adds current full-PPR expert consensus and identity mappings from
+It then adds current full-PPR 1-QB and Superflex/OP expert consensus plus identity mappings from
 [DynastyProcess open data](https://github.com/dynastyprocess/data), plus injury,
 depth-chart, and 24-hour add/drop signals from the [Sleeper API](https://docs.sleeper.com/).
 All downloads are size-bounded and cached under ignored `.cache/` directories.
@@ -202,6 +221,18 @@ bench at five. A market guardrail limits reaches to six picks in round 1, ten
 through round 4, 12 through round 8, 20 through round 12, and 35 afterward. RB
 replacement value is calculated deeper than QB replacement value to reflect
 two RB starters, FLEX demand, and the league's stronger RB scarcity.
+
+The Superflex profiles use DynastyProcess's separate free Superflex/OP expert
+consensus instead of treating ESPN's normal 1-QB overall board as Superflex
+ADP. If that signal is unavailable for a player, the live ESPN catalog's stable
+QB position order maps onto a conservative fallback curve. QB replacement
+moves from QB12 to QB30, QB1 is required by round 3, and QB2 is required by
+round 7. This allows a true elite quarterback to be an early-round value while
+preventing raw projected points from making every QB an automatic reach. A
+third QB is blocked before round 9 and is then considered only for a meaningful
+fall, injury coverage, or an upgrade. Standard 1-QB deadlines, QB2 restrictions,
+market blend, and opponent behavior remain unchanged when the default profile
+is selected.
 
 The team/bye concentration component is deliberately nonlinear. Adding a
 second player from the same NFL team or bye week is a small tiebreaker; adding a
