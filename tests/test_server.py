@@ -2,15 +2,31 @@ import copy
 import json
 import unittest
 from contextlib import ExitStack
+from datetime import date, datetime, timedelta, timezone
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from draft_agent import server
+from draft_agent.data import demo_players
 from draft_agent.engine import DraftEngine
 from draft_agent.espn import EspnDraftBridge
-from draft_agent.providers import NflverseProvider
+from draft_agent.models import Player
+from draft_agent.providers import (
+    CANONICAL_NFL_TEAMS,
+    NFLVERSE_SCHEDULES_TIMESTAMP_URL,
+    NFLVERSE_SCHEDULES_URL,
+    VEGAS_ATTRIBUTION,
+    VEGAS_LICENSE,
+    NflverseProvider,
+    NflverseVegasProvider,
+    VegasProviderResult,
+    VegasSnapshot,
+    VegasTeamTotal,
+)
 from draft_agent.scoring import projected_points
+from draft_agent.session import DraftSession
 from draft_agent.signals import FreeSignalProvider
 
 
@@ -80,11 +96,41 @@ def write_fake_caches(root: Path) -> tuple[NflverseProvider, FreeSignalProvider]
     return NflverseProvider(nflverse_dir), FreeSignalProvider(signal_dir)
 
 
+def write_fake_vegas_cache(root: Path) -> NflverseVegasProvider:
+    provider = NflverseVegasProvider(root / "vegas")
+    teams = {
+        team: VegasTeamTotal(
+            team,
+            1,
+            22 + (index % 6),
+            27 - (index % 6),
+        )
+        for index, team in enumerate(CANONICAL_NFL_TEAMS)
+    }
+    now = datetime.now(timezone.utc)
+    provider._write_snapshot(
+        VegasSnapshot(
+            teams=teams,
+            source_url=NFLVERSE_SCHEDULES_URL,
+            timestamp_url=NFLVERSE_SCHEDULES_TIMESTAMP_URL,
+            attribution=VEGAS_ATTRIBUTION,
+            license=VEGAS_LICENSE,
+            fetched_at=now.isoformat(),
+            dataset_timestamp=now.isoformat(),
+            season=date.today().year,
+            coverage=32,
+            lined_games=16,
+        )
+    )
+    return provider
+
+
 class ServerDataSafetyTests(unittest.TestCase):
     def setUp(self):
         self.original_session = server.SESSION
         self.original_data_source = server.DATA_SOURCE
         self.original_signals = server.SIGNAL_RECORDS
+        self.original_vegas = server.VEGAS_RESULT
         self.original_override = server.OVERRIDE_SECONDS
         self.original_samples = server.SIMULATION_SAMPLES
         self.original_bridge_state = copy.deepcopy(server.ESPN_BRIDGE.state)
@@ -93,6 +139,7 @@ class ServerDataSafetyTests(unittest.TestCase):
         server.SESSION = self.original_session
         server.DATA_SOURCE = self.original_data_source
         server.SIGNAL_RECORDS = self.original_signals
+        server.VEGAS_RESULT = self.original_vegas
         server.OVERRIDE_SECONDS = self.original_override
         server.SIMULATION_SAMPLES = self.original_samples
         server.ESPN_BRIDGE.state = self.original_bridge_state
@@ -100,8 +147,9 @@ class ServerDataSafetyTests(unittest.TestCase):
     def test_valid_caches_restore_offline_and_settings_preserve_loaded_players(self):
         with TemporaryDirectory() as directory:
             nflverse, signals = write_fake_caches(Path(directory))
+            vegas = write_fake_vegas_cache(Path(directory))
             with patch("urllib.request.urlopen", side_effect=AssertionError("network used")):
-                self.assertTrue(server._restore_cached_data(nflverse, signals))
+                self.assertTrue(server._restore_cached_data(nflverse, signals, vegas))
 
             before = {
                 player.player_id: (dict(player.external_ids), dict(player.signals))
@@ -157,6 +205,11 @@ class ServerDataSafetyTests(unittest.TestCase):
             state_payload = server._state_payload()
             self.assertIn("historical", state_payload["readiness"]["sources"])
             self.assertIn("signals", state_payload["readiness"]["sources"])
+            self.assertIn("vegas", state_payload["readiness"]["sources"])
+            vegas_health = state_payload["readiness"]["sources"]["vegas"]
+            self.assertTrue(vegas_health["fresh"])
+            self.assertEqual(vegas_health["coverage"], 32)
+            self.assertTrue(vegas_health["optional"])
 
             server.DATA_SOURCE["signals_fetched_at"] = "2000-01-01T00:00:00+00:00"
             stale_health = server._data_health()
@@ -173,6 +226,7 @@ class ServerDataSafetyTests(unittest.TestCase):
                     server._restore_cached_data(
                         NflverseProvider(root / "missing-nflverse"),
                         FreeSignalProvider(root / "missing-signals"),
+                        NflverseVegasProvider(root / "missing-vegas"),
                     )
                 )
             self.assertEqual(server.DATA_SOURCE["kind"], "demo")
@@ -191,11 +245,12 @@ class ServerDataSafetyTests(unittest.TestCase):
             )
 
             nflverse, signals = write_fake_caches(root / "valid")
+            vegas = write_fake_vegas_cache(root / "valid")
             (signals.cache_dir / "sleeper_players.json").write_text(
                 "not valid json", encoding="utf-8"
             )
             with patch("urllib.request.urlopen", side_effect=AssertionError("network used")):
-                self.assertFalse(server._restore_cached_data(nflverse, signals))
+                self.assertFalse(server._restore_cached_data(nflverse, signals, vegas))
             self.assertEqual(server.DATA_SOURCE["kind"], "nflverse")
             self.assertNotIn("signals", server.DATA_SOURCE)
             health = server._data_health()
@@ -210,6 +265,7 @@ class ServerDataSafetyTests(unittest.TestCase):
         for filename, payload in cases:
             with self.subTest(filename=filename), TemporaryDirectory() as directory:
                 nflverse, signals = write_fake_caches(Path(directory))
+                vegas = write_fake_vegas_cache(Path(directory))
                 (signals.cache_dir / filename).write_text(
                     json.dumps(payload), encoding="utf-8"
                 )
@@ -228,6 +284,9 @@ class ServerDataSafetyTests(unittest.TestCase):
                     )
                     stack.enter_context(
                         patch.object(server, "FreeSignalProvider", return_value=signals)
+                    )
+                    stack.enter_context(
+                        patch.object(server, "NflverseVegasProvider", return_value=vegas)
                     )
                     stack.enter_context(
                         patch.object(
@@ -273,6 +332,103 @@ class ServerDataSafetyTests(unittest.TestCase):
                     state["data_source"]["restore_warning"],
                     server.DATA_SOURCE["restore_warning"],
                 )
+
+    def test_invalid_optional_vegas_cache_does_not_block_required_data(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            nflverse, signals = write_fake_caches(root)
+            vegas = write_fake_vegas_cache(root)
+            vegas.cache_path.write_text("not json", encoding="utf-8")
+
+            with patch("urllib.request.urlopen", side_effect=AssertionError("network used")):
+                self.assertTrue(server._restore_cached_data(nflverse, signals, vegas))
+            health = server._data_health()
+            self.assertTrue(health["ready"])
+            self.assertEqual(health["sources"]["vegas"]["status"], "invalid")
+            self.assertFalse(health["sources"]["vegas"]["fresh"])
+
+    def test_stale_vegas_stays_in_health_but_is_removed_from_players(self):
+        with TemporaryDirectory() as directory:
+            provider = write_fake_vegas_cache(Path(directory))
+            fresh = provider.load_cached()
+            fetched = datetime.fromisoformat(fresh.snapshot.fetched_at)
+            stale_now = fetched.replace(tzinfo=timezone.utc) + timedelta(hours=49)
+            server.VEGAS_RESULT = VegasProviderResult(
+                fresh.snapshot,
+                "stale",
+                True,
+            )
+            server.SESSION = DraftSession(
+                [
+                    Player(
+                        "ari",
+                        "Arizona Player",
+                        "ARI",
+                        "RB",
+                        1,
+                        signals={
+                            "vegas_implied_points": 30,
+                            "vegas_opponent_implied_points": 20,
+                            "vegas_games": 1,
+                            "vegas_league_implied_points": 24,
+                            "vegas_league_opponent_implied_points": 24,
+                        },
+                    )
+                ]
+            )
+
+            health = server._data_health(stale_now)
+            self.assertTrue(health["sources"]["vegas"]["loaded"])
+            self.assertFalse(health["sources"]["vegas"]["fresh"])
+            self.assertEqual(health["sources"]["vegas"]["coverage"], 32)
+            self.assertNotIn(
+                "vegas_implied_points", server.SESSION.players["ari"].signals
+            )
+
+    def test_vegas_refresh_endpoint_state_and_dashboard_are_explicit(self):
+        with TemporaryDirectory() as directory:
+            provider = write_fake_vegas_cache(Path(directory))
+            cached = provider.load_cached()
+            result = VegasProviderResult(cached.snapshot, "refreshed", False)
+            handler = object.__new__(server.DraftRequestHandler)
+            handler.path = "/api/data/vegas"
+            handler._body = lambda: {"refresh": True}
+            responses = []
+            handler._json = lambda payload, status=None: responses.append((payload, status))
+
+            provider_mock = Mock()
+            provider_mock.refresh.return_value = result
+            with patch.object(server, "NflverseVegasProvider", return_value=provider_mock):
+                handler.do_POST()
+
+            self.assertEqual(len(responses), 1)
+            vegas = responses[0][0]["data_source"]["freshness"]["vegas"]
+            self.assertEqual(vegas["status"], "refreshed")
+            self.assertEqual(vegas["coverage"], 32)
+            self.assertEqual(vegas["license"], "CC BY 4.0")
+            provider_mock.refresh.assert_called_once()
+
+            html = files("draft_agent").joinpath("web/index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("/api/data/vegas", html)
+            self.assertIn("team-level Vegas", html)
+            self.assertIn("not player props", html)
+            self.assertIn("CC BY 4.0", html)
+            self.assertIn("vegas_environment", html)
+
+    def test_weights_api_cannot_raise_vegas_contribution_above_cap(self):
+        server.SESSION = DraftSession(demo_players())
+        handler = object.__new__(server.DraftRequestHandler)
+        handler.path = "/api/weights"
+        handler._body = lambda: {"vegas_environment": 1}
+        responses = []
+        handler._json = lambda payload, status=None: responses.append((payload, status))
+
+        handler.do_POST()
+
+        self.assertEqual(server.SESSION.engine.weights.vegas_environment, 0.03)
+        self.assertEqual(responses[0][0]["weights"]["vegas_environment"], 0.03)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ class StrategyWeights:
     portfolio_concentration: float = 0.08
     rb_backfield: float = 0.18
     trend: float = 0.02
+    vegas_environment: float = 0.03
     rookie_camp_role: float = 0.03
     preference: float = 0.25
     exposure_penalty: float = 0.18
@@ -48,6 +49,8 @@ class StrategyWeights:
                 value = float(values[key])
                 if not 0 <= value <= 1:
                     raise ValueError(f"{key} must be between 0 and 1")
+                if key == "vegas_environment":
+                    value = min(value, 0.03)
                 setattr(self, key, value)
 
 
@@ -57,6 +60,8 @@ class DraftEngine:
     replacement_rank = {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12}
     strong_starter_market = {"QB": 90, "TE": 60}
     espn_market_weight = 0.70
+    vegas_contribution_cap = 0.03
+    vegas_point_scale = 7.0
 
     def __init__(
         self,
@@ -567,6 +572,29 @@ class DraftEngine:
             practice_score = 0.5
         return depth_score * 0.75 + practice_score * 0.25
 
+    @classmethod
+    def _vegas_environment(cls, player: Player) -> float:
+        """Return signed, league-centered team context; missing data is neutral."""
+        try:
+            games = float(player.signals["vegas_games"])
+            if player.position == "DST":
+                value = float(player.signals["vegas_opponent_implied_points"])
+                center = float(
+                    player.signals["vegas_league_opponent_implied_points"]
+                )
+                difference = center - value
+            elif player.position in {"QB", "RB", "WR", "TE", "K"}:
+                value = float(player.signals["vegas_implied_points"])
+                center = float(player.signals["vegas_league_implied_points"])
+                difference = value - center
+            else:
+                return 0.0
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+        if not all(math.isfinite(item) for item in (games, value, center)) or games <= 0:
+            return 0.0
+        return max(-1.0, min(1.0, difference / cls.vegas_point_scale))
+
     @staticmethod
     def _availability(player: Player) -> float:
         injury = player.context.get("injury_status", "").lower()
@@ -862,6 +890,7 @@ class DraftEngine:
                 "portfolio_concentration": portfolio_concentration,
                 "rb_backfield": rb_backfield,
                 "trend": components["trend"][player.player_id],
+                "vegas_environment": self._vegas_environment(player),
                 "rookie_camp_role": rookie_camp_role,
                 "preference": preference,
                 "exposure_penalty": exposure,
@@ -878,10 +907,15 @@ class DraftEngine:
                 "rb_backfield",
                 "risk",
             }
-            contributions = {
-                key: getattr(self.weights, key) * value * (-1 if key in penalty_components else 1)
-                for key, value in detail.items()
-            }
+            contributions = {}
+            for key, value in detail.items():
+                weight = getattr(self.weights, key)
+                if key == "vegas_environment":
+                    # Defense in depth: direct Python mutation cannot bypass the API cap.
+                    weight = max(0.0, min(float(weight), self.vegas_contribution_cap))
+                contributions[key] = weight * value * (
+                    -1 if key in penalty_components else 1
+                )
             score = sum(contributions.values())
             results.append(
                 {

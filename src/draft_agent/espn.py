@@ -13,6 +13,7 @@ from typing import Any
 from .config import LeagueConfig
 from .engine import DraftEngine
 from .models import Player
+from .providers import VegasSnapshot, apply_vegas_context
 from .scoring import projected_points
 from .signals import SignalRecord, apply_signals
 
@@ -634,7 +635,7 @@ class EspnDraftBridge:
             return (
                 EspnDraftBridge._with_position_ranks(historical),
                 1.0,
-                sum(bool(player.signals) for player in historical)
+                sum("consensus_rank" in player.signals for player in historical)
                 / max(len(historical), 1),
             )
         if not isinstance(raw_catalog, list) or not raw_catalog:
@@ -702,7 +703,9 @@ class EspnDraftBridge:
                         projected_points_override=projection,
                     )
                 )
-        signal_rate = sum(bool(player.signals) for player in merged) / len(merged)
+        signal_rate = sum(
+            "consensus_rank" in player.signals for player in merged
+        ) / len(merged)
         return (
             EspnDraftBridge._with_position_ranks(merged),
             enriched / len(merged),
@@ -717,6 +720,7 @@ class EspnDraftBridge:
         config: LeagueConfig,
         signal_records: list[SignalRecord] | None = None,
         source_status: dict[str, object] | None = None,
+        vegas_snapshot: VegasSnapshot | None = None,
     ) -> dict[str, object]:
         league_id = str(payload.get("league_id") or "").strip()
         draft_id = str(payload.get("draft_id") or "").strip()
@@ -773,6 +777,9 @@ class EspnDraftBridge:
             signal_rate = sum(
                 "consensus_rank" in player.signals for player in merged_players
             ) / len(merged_players)
+        # Team-market context is optional and never participates in readiness.
+        # This also strips inherited Vegas fields when no usable snapshot exists.
+        merged_players, _ = apply_vegas_context(merged_players, vegas_snapshot)
         by_espn_id = {
             player.external_ids["espn"]: player
             for player in merged_players
