@@ -678,8 +678,8 @@ class DraftEngine:
 
     @staticmethod
     def _availability(player: Player) -> float:
-        injury = player.context.get("injury_status", "").lower()
-        nfl_status = player.context.get("nfl_status", "").lower()
+        injury = player.context.get("injury_status", "").strip().lower()
+        nfl_status = player.context.get("nfl_status", "").strip().lower()
         if any(value in injury or value in nfl_status for value in ("reserve", "injured reserve", "pup")):
             return 0.0
         if injury in {"out", "doubtful"} or nfl_status in {"out", "inactive"}:

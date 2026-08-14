@@ -571,6 +571,109 @@ class LeagueProfileTests(unittest.TestCase):
         self.assertEqual({item["id"] for item in ranked}, {"bench-wr", "tier-te"})
         self.assertTrue(all(not item["te_tier_triggered"] for item in ranked))
 
+    def test_padded_case_varied_unavailable_statuses_block_shortcuts(self):
+        unavailable_contexts = (
+            ("out", {"injury_status": " oUt "}),
+            ("doubtful", {"injury_status": " DoUbTfUl "}),
+            ("inactive", {"nfl_status": " InAcTiVe "}),
+        )
+        te_pick = 73
+        qb_pick = 97
+
+        for profile_id in (SUPERFLEX_REPLACES_FLEX, FLEX_AND_SUPERFLEX):
+            engine = DraftEngine(
+                league_config_for_profile(profile_id), simulation_samples=20
+            )
+            te_roster = self._te_foundation(7)
+            qb_roster = self._strong_superflex_qbs() + [
+                Player("qb-test-rb-1", "RB One", "DDD", "RB", 20),
+                Player("qb-test-rb-2", "RB Two", "EEE", "RB", 30),
+                Player("qb-test-wr-1", "WR One", "FFF", "WR", 25),
+                Player("qb-test-wr-2", "WR Two", "GGG", "WR", 35),
+            ]
+
+            for label, context in unavailable_contexts:
+                with self.subTest(profile=profile_id, status=label):
+                    unavailable_te = Player(
+                        f"padded-{label}-te",
+                        f"Padded {label} Tight End",
+                        "HHH",
+                        "TE",
+                        te_pick,
+                        signals={
+                            "superflex_rank": te_pick,
+                            "espn_position_rank": 1,
+                        },
+                        context=context,
+                    )
+                    bench_wr = Player(
+                        f"padded-{label}-wr",
+                        f"Padded {label} Receiver",
+                        "III",
+                        "WR",
+                        te_pick,
+                        signals={"superflex_rank": te_pick},
+                    )
+                    self.assertEqual(
+                        engine._triggered_te_tier(
+                            [unavailable_te, bench_wr],
+                            te_roster,
+                            7,
+                            te_pick,
+                            engine._market_reach_limit(7),
+                        ),
+                        set(),
+                    )
+                    te_ranked = engine.rank(
+                        [unavailable_te, bench_wr],
+                        te_roster,
+                        te_pick,
+                        84,
+                        2,
+                    )
+                    self.assertIn(
+                        bench_wr.player_id,
+                        [item["id"] for item in te_ranked],
+                    )
+                    self.assertTrue(
+                        all(not item["te_tier_triggered"] for item in te_ranked)
+                    )
+
+                    unavailable_qb = Player(
+                        f"padded-{label}-qb",
+                        f"Padded {label} Quarterback",
+                        "JJJ",
+                        "QB",
+                        70,
+                        projected_points_override=250,
+                        signals={
+                            "superflex_rank": 70,
+                            "espn_position_rank": 1,
+                            "depth_chart_order": 1,
+                        },
+                        context=context,
+                    )
+                    healthy_wr = Player(
+                        f"healthy-{label}-wr",
+                        f"Healthy {label} Receiver",
+                        "KKK",
+                        "WR",
+                        qb_pick,
+                        signals={"superflex_rank": qb_pick},
+                    )
+                    self.assertFalse(engine._is_starting_qb(unavailable_qb))
+                    qb_ranked = engine.rank(
+                        [unavailable_qb, healthy_wr],
+                        qb_roster,
+                        qb_pick,
+                        108,
+                        2,
+                    )
+                    self.assertNotIn(
+                        unavailable_qb.player_id,
+                        [item["id"] for item in qb_ranked],
+                    )
+
     def test_qb3_starter_detection_prefers_explicit_depth_chart_data(self):
         engine = DraftEngine(
             league_config_for_profile(SUPERFLEX_REPLACES_FLEX),
