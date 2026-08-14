@@ -118,11 +118,14 @@ def _usable_vegas_snapshot(now: datetime | None = None) -> VegasSnapshot | None:
 
 def _sync_session_vegas(now: datetime | None = None) -> int:
     """Apply fresh Vegas fields, or remove them without resetting draft state."""
+    snapshot = _usable_vegas_snapshot(now)
     enriched, matched = apply_vegas_context(
         list(SESSION.players.values()),
-        _usable_vegas_snapshot(now),
+        snapshot,
     )
     SESSION.players = {player.player_id: player for player in enriched}
+    if snapshot is None:
+        ESPN_BRIDGE.neutralize_vegas_ranking()
     return matched
 
 
@@ -239,6 +242,9 @@ def _data_health(now: datetime | None = None) -> dict[str, object]:
 
 
 def _espn_state_payload(source_health: dict[str, object]) -> dict[str, object]:
+    vegas_health = dict(source_health.get("sources", {})).get("vegas")
+    if isinstance(vegas_health, dict) and vegas_health.get("usable") is False:
+        ESPN_BRIDGE.neutralize_vegas_ranking()
     state = copy.deepcopy(ESPN_BRIDGE.state)
     readiness = copy.deepcopy(
         state.get(

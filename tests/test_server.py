@@ -2,6 +2,7 @@ import copy
 import json
 import unittest
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from importlib.resources import files
 from pathlib import Path
@@ -133,7 +134,8 @@ class ServerDataSafetyTests(unittest.TestCase):
         self.original_vegas = server.VEGAS_RESULT
         self.original_override = server.OVERRIDE_SECONDS
         self.original_samples = server.SIMULATION_SAMPLES
-        self.original_bridge_state = copy.deepcopy(server.ESPN_BRIDGE.state)
+        self.original_bridge = server.ESPN_BRIDGE
+        server.ESPN_BRIDGE = EspnDraftBridge()
 
     def tearDown(self):
         server.SESSION = self.original_session
@@ -142,7 +144,168 @@ class ServerDataSafetyTests(unittest.TestCase):
         server.VEGAS_RESULT = self.original_vegas
         server.OVERRIDE_SECONDS = self.original_override
         server.SIMULATION_SAMPLES = self.original_samples
-        server.ESPN_BRIDGE.state = self.original_bridge_state
+        server.ESPN_BRIDGE = self.original_bridge
+
+    def _ready_live_vegas_state(
+        self, root: Path, draft_id: str
+    ) -> tuple[
+        NflverseVegasProvider,
+        VegasSnapshot,
+        datetime,
+        dict[str, object],
+        str,
+    ]:
+        nflverse, signals = write_fake_caches(root)
+        vegas_provider = write_fake_vegas_cache(root)
+        with patch(
+            "urllib.request.urlopen", side_effect=AssertionError("network used")
+        ) as urlopen:
+            self.assertTrue(
+                server._restore_cached_data(nflverse, signals, vegas_provider)
+            )
+        urlopen.assert_not_called()
+
+        reference_now = datetime.now(timezone.utc)
+        snapshot = server.VEGAS_RESULT.snapshot
+        self.assertIsNotNone(snapshot)
+        historical = []
+        catalog = []
+        for index in range(100):
+            espn_id = str(50_000 + index)
+            market_rank = 1 if index < 6 else 50 + index
+            projection = 250 if index < 10 else 220 - index
+            if index == 0:
+                team = "ARI"
+            elif index < 6:
+                team = "CHI"
+            else:
+                team = CANONICAL_NFL_TEAMS[index % 32]
+            player = Player(
+                f"generated-{index:03d}",
+                f"Generated Back {index:03d}",
+                team,
+                "RB",
+                market_rank,
+                upside=0.5,
+                risk=0.2,
+                external_ids={"espn": espn_id},
+                projected_points_override=projection,
+                signals={"consensus_rank": market_rank, "consensus_sd": 4},
+            )
+            historical.append(player)
+            catalog.append(
+                {
+                    "id": espn_id,
+                    "name": player.name,
+                    "team": team,
+                    "position": "RB",
+                    "rank": market_rank,
+                    "projected_points": projection,
+                }
+            )
+        payload = {
+            "league_id": "generated-league",
+            "draft_id": draft_id,
+            "overall_pick": 1,
+            "on_clock": True,
+            "is_mock": True,
+            "user_slot": 1,
+            "player_catalog": catalog,
+            "available_player_ids": [item["id"] for item in catalog],
+            "roster_player_ids": [],
+        }
+        source_health = server._data_health(reference_now)
+        self.assertTrue(source_health["ready"])
+        self.assertTrue(source_health["sources"]["vegas"]["usable"])
+        config = replace(server.SESSION.config, user_slot=1)
+
+        neutral_bridge = EspnDraftBridge()
+        neutral_state = copy.deepcopy(
+            neutral_bridge.ingest(
+                payload,
+                historical,
+                DraftEngine(config, simulation_samples=20),
+                config,
+                None,
+                source_health,
+                vegas_snapshot=None,
+            )
+        )
+        live_bridge = EspnDraftBridge()
+        live_state = live_bridge.ingest(
+            payload,
+            historical,
+            DraftEngine(config, simulation_samples=20),
+            config,
+            None,
+            source_health,
+            vegas_snapshot=snapshot,
+        )
+        self.assertTrue(live_state["readiness"]["ready"])
+        self.assertTrue(
+            any(
+                item["contributions"]["vegas_environment"] != 0
+                for item in live_state["recommendations"]
+            )
+        )
+        self.assertNotEqual(
+            live_state["prequeue_espn_player_ids"],
+            neutral_state["prequeue_espn_player_ids"],
+        )
+        self.assertNotIn(
+            neutral_state["pending_espn_player_id"],
+            live_state["prequeue_espn_player_ids"],
+        )
+        server.ESPN_BRIDGE = live_bridge
+        return (
+            vegas_provider,
+            snapshot,
+            reference_now,
+            neutral_state,
+            str(live_state["received_at"]),
+        )
+
+    def _assert_exact_neutral_live_state(
+        self,
+        espn_state: dict[str, object],
+        vegas_health: dict[str, object],
+        neutral_state: dict[str, object],
+        received_at: str,
+    ) -> None:
+        self.assertTrue(espn_state["readiness"]["ready"])
+        self.assertFalse(vegas_health["fresh"])
+        self.assertFalse(vegas_health["usable"])
+        self.assertEqual(vegas_health["status"], "stale")
+        self.assertEqual(espn_state["received_at"], received_at)
+        self.assertEqual(
+            espn_state["recommendations"], neutral_state["recommendations"]
+        )
+        self.assertEqual(
+            espn_state["prequeue_espn_player_ids"],
+            neutral_state["prequeue_espn_player_ids"],
+        )
+        self.assertEqual(
+            espn_state["pending_espn_player_id"],
+            neutral_state["pending_espn_player_id"],
+        )
+        self.assertEqual(
+            espn_state["mock_command_ready"], neutral_state["mock_command_ready"]
+        )
+        self.assertIn("fully reranked", espn_state["message"])
+        for item in espn_state["recommendations"]:
+            self.assertEqual(item["components"]["vegas_environment"], 0)
+            self.assertEqual(item["contributions"]["vegas_environment"], 0)
+
+        decision = server.ESPN_BRIDGE.decisions(1)[0]
+        explained = [decision["recommended_player"], *decision["top_overall"]]
+        explained.extend(
+            item
+            for item in decision["top_by_position"].values()
+            if item.get("status") == "eligible"
+        )
+        for item in explained:
+            self.assertEqual(item["components"]["vegas_environment"], 0)
+            self.assertEqual(item["contributions"]["vegas_environment"], 0)
 
     def test_valid_caches_restore_offline_and_settings_preserve_loaded_players(self):
         with TemporaryDirectory() as directory:
@@ -383,6 +546,68 @@ class ServerDataSafetyTests(unittest.TestCase):
             self.assertEqual(health["sources"]["vegas"]["coverage"], 32)
             self.assertNotIn(
                 "vegas_implied_points", server.SESSION.players["ari"].signals
+            )
+
+    def test_natural_vegas_expiry_fully_reranks_retained_live_espn_state(self):
+        with TemporaryDirectory() as directory:
+            _, snapshot, now, neutral, received_at = self._ready_live_vegas_state(
+                Path(directory), "natural-expiry"
+            )
+            server.VEGAS_RESULT = VegasProviderResult(
+                replace(snapshot, fetched_at=(now - timedelta(hours=49)).isoformat()),
+                "cached",
+                True,
+            )
+
+            with patch(
+                "urllib.request.urlopen", side_effect=AssertionError("network used")
+            ) as urlopen:
+                health = server._data_health(now)
+                self.assertEqual(
+                    server.ESPN_BRIDGE.state["recommendations"],
+                    neutral["recommendations"],
+                )
+                espn_state = server._espn_state_payload(health)
+            urlopen.assert_not_called()
+
+            self._assert_exact_neutral_live_state(
+                espn_state,
+                health["sources"]["vegas"],
+                neutral,
+                received_at,
+            )
+
+    def test_failed_refresh_stale_fallback_fully_reranks_live_espn_state(self):
+        with TemporaryDirectory() as directory:
+            provider, snapshot, now, neutral, received_at = self._ready_live_vegas_state(
+                Path(directory), "failed-refresh"
+            )
+            provider._write_snapshot(
+                replace(snapshot, fetched_at=(now - timedelta(hours=49)).isoformat())
+            )
+            handler = object.__new__(server.DraftRequestHandler)
+            handler.path = "/api/data/vegas"
+            handler._body = lambda: {"refresh": True}
+            responses = []
+            handler._json = lambda payload, status=None: responses.append(
+                (payload, status)
+            )
+
+            with patch.object(
+                server, "NflverseVegasProvider", return_value=provider
+            ), patch(
+                "urllib.request.urlopen",
+                side_effect=OSError("outbound network denied by test"),
+            ) as urlopen:
+                handler.do_POST()
+
+            self.assertEqual(urlopen.call_count, 1)
+            self.assertEqual(len(responses), 1)
+            payload = responses[0][0]
+            vegas_health = payload["data_source"]["freshness"]["vegas"]
+            self.assertIn("refresh failed", vegas_health["error"].lower())
+            self._assert_exact_neutral_live_state(
+                payload["espn"], vegas_health, neutral, received_at
             )
 
     def test_vegas_refresh_endpoint_state_and_dashboard_are_explicit(self):
