@@ -207,6 +207,83 @@ class DraftEngine:
             return -1.0
         return 0.0
 
+    @staticmethod
+    def _espn_position_rank(player: Player) -> float | None:
+        value = player.signals.get("espn_position_rank")
+        if not isinstance(value, (int, float)):
+            return None
+        rank = float(value)
+        return rank if math.isfinite(rank) and rank > 0 else None
+
+    @classmethod
+    def _is_shortcut_usable(cls, player: Player) -> bool:
+        """Return whether an availability-sensitive shortcut may use a player."""
+        injury = player.context.get("injury_status", "").strip().lower()
+        nfl_status = player.context.get("nfl_status", "").strip().lower()
+        return (
+            cls._availability(player) >= 0.62
+            and injury != "ir"
+            and nfl_status != "ir"
+        )
+
+    def _is_starting_qb(self, player: Player) -> bool:
+        """Identify an active NFL starter, preferring explicit depth data."""
+        if player.position != "QB" or not self._is_shortcut_usable(player):
+            return False
+
+        depth_order = player.signals.get("depth_chart_order")
+        if depth_order is not None:
+            return bool(
+                isinstance(depth_order, (int, float))
+                and math.isfinite(float(depth_order))
+                and 0 < float(depth_order) <= 1
+            )
+
+        position_rank = self._espn_position_rank(player)
+        return position_rank is not None and position_rank <= 32
+
+    def _triggered_te_tier(
+        self,
+        candidates: list[Player],
+        roster: list[Player],
+        round_number: int,
+        current_pick: int,
+        reach_limit: int,
+    ) -> set[str]:
+        """Return usable, market-eligible TEs in the protected starter tier."""
+        maximum_te_rank = {
+            5: 5,
+            6: 5,
+            7: 8,
+            8: 10,
+            9: 12,
+        }.get(round_number)
+        if (
+            not self.config.is_superflex
+            or maximum_te_rank is None
+            or any(item.position == "TE" for item in roster)
+        ):
+            return set()
+
+        counts = Counter(item.position for item in roster)
+        if (
+            counts["QB"] < self.config.position_starters("QB")
+            or counts["RB"] < 1
+            or counts["WR"] < 1
+        ):
+            return set()
+        if round_number >= 6 and (counts["RB"] < 2 or counts["WR"] < 2):
+            return set()
+
+        return {
+            player.player_id
+            for player in candidates
+            if player.position == "TE"
+            and (self._espn_position_rank(player) or math.inf) <= maximum_te_rank
+            and self._draft_market_rank(player) - current_pick <= reach_limit
+            and self._is_shortcut_usable(player)
+        }
+
     def _rb_anchor(
         self,
         player: Player,
@@ -419,6 +496,10 @@ class DraftEngine:
                     and current_pick - self._draft_market_rank(player) < 12
                 ):
                     return -1.0
+                # In rounds 9-11 only, a discounted active NFL starter can be
+                # useful QB3 insurance even behind two strong incumbents.
+                if 9 <= round_number <= 11 and self._is_starting_qb(player):
+                    return 0.45
                 if self._starter_blocks_backup(player, roster):
                     return -1.0
                 return 0.45
@@ -724,10 +805,27 @@ class DraftEngine:
                 base_eligible = under_limit
 
         reach_limit = self._market_reach_limit(round_number)
+        deadline_positions = set(required_positions)
+        triggered_te_ids = self._triggered_te_tier(
+            base_eligible,
+            roster,
+            round_number,
+            current_pick,
+            reach_limit,
+        )
+        if triggered_te_ids:
+            required_positions.add("TE")
         eligible = base_eligible
         if required_positions:
             required_pool = [
-                player for player in base_eligible if player.position in required_positions
+                player
+                for player in base_eligible
+                if player.position in required_positions
+                and (
+                    player.position != "TE"
+                    or "TE" in deadline_positions
+                    or player.player_id in triggered_te_ids
+                )
             ]
             required_limit = (
                 min(reach_limit, 10)
@@ -932,6 +1030,7 @@ class DraftEngine:
                     "market_disagreement": round(market_disagreement, 3),
                     "market_reach": round(max(0.0, market_rank - current_pick), 1),
                     "market_reach_limit": reach_limit,
+                    "te_tier_triggered": player.player_id in triggered_te_ids,
                     "draft_score": round(score, 4),
                     "components": {key: round(value, 3) for key, value in detail.items()},
                     "contributions": {
