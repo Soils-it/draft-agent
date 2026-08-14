@@ -259,10 +259,22 @@ QB position order maps onto a conservative fallback curve. QB replacement
 moves from QB12 to QB30, QB1 is required by round 3, and QB2 is required by
 round 7. This allows a true elite quarterback to be an early-round value while
 preventing raw projected points from making every QB an automatic reach. A
-third QB is blocked before round 9 and is then considered only for a meaningful
-fall, injury coverage, or an upgrade. Standard 1-QB deadlines, QB2 restrictions,
-market blend, and opponent behavior remain unchanged when the default profile
-is selected.
+third QB is blocked before round 9. In rounds 9-11, an active NFL starter who
+has fallen at least 12 profile-specific market spots can be considered as
+discounted QB3 insurance even behind two strong starters. Sleeper depth-chart
+order 1 identifies a starter, an explicit order greater than 1 vetoes that
+shortcut, and ESPN top-32 position rank is used only when depth-chart order is
+missing. From round 12 onward, the existing injury-coverage or material-upgrade
+policy applies instead.
+
+Both Superflex profiles also protect bounded starting-TE tiers. The top five
+ESPN TEs can trigger in rounds 5-6, the top eight in round 7, the top 10 in
+round 8, and the top 12 in round 9; the trigger is inactive outside rounds 5-9.
+It requires QB1/QB2 plus RB1/WR1 in round 5, and the full 2RB/2WR foundation
+from round 6 onward. Only usable TEs inside the normal market-reach limit can
+trigger, so Out, Doubtful, IR/PUP, and inactive players cannot become the sole
+forced tier result. Standard 1-QB QB/TE deadlines, rankings, market blend, and
+opponent behavior remain unchanged when the default profile is selected.
 
 The team/bye concentration component is deliberately nonlinear. Adding a
 second player from the same NFL team or bye week is a small tiebreaker; adding a
