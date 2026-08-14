@@ -20,7 +20,19 @@ from .config import (
 from .data import demo_players
 from .espn import EspnDraftBridge
 from .models import Player
-from .providers import NflverseProvider
+from .providers import (
+    CANONICAL_NFL_TEAMS,
+    NFLVERSE_SCHEDULES_TIMESTAMP_URL,
+    NFLVERSE_SCHEDULES_URL,
+    VEGAS_ATTRIBUTION,
+    VEGAS_LICENSE,
+    VEGAS_MAX_AGE_HOURS,
+    NflverseProvider,
+    NflverseVegasProvider,
+    VegasProviderResult,
+    VegasSnapshot,
+    apply_vegas_context,
+)
 from .signals import FreeSignalProvider, SignalRecord, apply_signals
 from .session import DraftSession
 
@@ -46,6 +58,7 @@ def _demo_data_source(warning: str | None = None) -> dict[str, object]:
 
 DATA_SOURCE: dict[str, object] = _demo_data_source()
 SIGNAL_RECORDS: list[SignalRecord] = []
+VEGAS_RESULT: VegasProviderResult | None = None
 PLAYER_PREFERENCES: dict[str, object] = {
     "prefer": [],
     "fade": [],
@@ -97,12 +110,75 @@ def _age_seconds(timestamp: object, now: datetime | None = None) -> float | None
     return None if age < -300 else max(0.0, age)
 
 
+def _usable_vegas_snapshot(now: datetime | None = None) -> VegasSnapshot | None:
+    if VEGAS_RESULT is None or not VEGAS_RESULT.usable(now):
+        return None
+    return VEGAS_RESULT.snapshot
+
+
+def _sync_session_vegas(now: datetime | None = None) -> int:
+    """Apply fresh Vegas fields, or remove them without resetting draft state."""
+    snapshot = _usable_vegas_snapshot(now)
+    enriched, matched = apply_vegas_context(
+        list(SESSION.players.values()),
+        snapshot,
+    )
+    SESSION.players = {player.player_id: player for player in enriched}
+    if snapshot is None:
+        ESPN_BRIDGE.neutralize_vegas_ranking()
+    return matched
+
+
+def _vegas_health(now: datetime | None = None) -> dict[str, object]:
+    current = now or datetime.now(timezone.utc)
+    result = VEGAS_RESULT
+    snapshot = result.snapshot if result else None
+    age = _age_seconds(snapshot.fetched_at, current) if snapshot else None
+    fresh = bool(result and result.usable(current))
+    status = result.status if result else "unavailable"
+    if snapshot is not None and not fresh and status in {"cached", "refreshed", "fallback"}:
+        status = "stale"
+    return {
+        "loaded": snapshot is not None,
+        "fresh": fresh,
+        "usable": fresh,
+        "optional": True,
+        "status": status,
+        "error": result.error if result else None,
+        "cached": bool(result.cached) if result else False,
+        "fetched_at": snapshot.fetched_at if snapshot else None,
+        "age_hours": round(age / 3600, 1) if age is not None else None,
+        "max_age_hours": VEGAS_MAX_AGE_HOURS,
+        "dataset_timestamp": snapshot.dataset_timestamp if snapshot else None,
+        "season": snapshot.season if snapshot else None,
+        "coverage": snapshot.coverage if snapshot else 0,
+        "required_coverage": len(CANONICAL_NFL_TEAMS),
+        "lined_games": snapshot.lined_games if snapshot else 0,
+        "matched_players": sum(
+            "vegas_games" in player.signals for player in SESSION.players.values()
+        ),
+        "source_url": snapshot.source_url if snapshot else NFLVERSE_SCHEDULES_URL,
+        "timestamp_url": (
+            snapshot.timestamp_url if snapshot else NFLVERSE_SCHEDULES_TIMESTAMP_URL
+        ),
+        "attribution": snapshot.attribution if snapshot else VEGAS_ATTRIBUTION,
+        "license": snapshot.license if snapshot else VEGAS_LICENSE,
+        "team_totals": {
+            team: total.as_dict() for team, total in sorted(snapshot.teams.items())
+        }
+        if snapshot
+        else {},
+        "label": "Team-level market context; not player props or a projection replacement.",
+    }
+
+
 def _data_health(now: datetime | None = None) -> dict[str, object]:
+    _sync_session_vegas(now)
     players = list(SESSION.players.values())
     historical_players = sum(
         player.player_id.startswith("nflverse-") for player in players
     )
-    signaled_players = sum(bool(player.signals) for player in players)
+    signaled_players = sum("consensus_rank" in player.signals for player in players)
     mapped_espn_ids = sum(bool(player.external_ids.get("espn")) for player in players)
     historical_claim = DATA_SOURCE.get("kind") == "nflverse"
     historical_loaded = historical_claim and historical_players >= 100
@@ -160,11 +236,15 @@ def _data_health(now: datetime | None = None) -> dict[str, object]:
                 "matched_players": signaled_players,
                 "records": len(SIGNAL_RECORDS),
             },
+            "vegas": _vegas_health(now),
         },
     }
 
 
 def _espn_state_payload(source_health: dict[str, object]) -> dict[str, object]:
+    vegas_health = dict(source_health.get("sources", {})).get("vegas")
+    if isinstance(vegas_health, dict) and vegas_health.get("usable") is False:
+        ESPN_BRIDGE.neutralize_vegas_ranking()
     state = copy.deepcopy(ESPN_BRIDGE.state)
     readiness = copy.deepcopy(
         state.get(
@@ -211,11 +291,22 @@ def _espn_state_payload(source_health: dict[str, object]) -> dict[str, object]:
 def _restore_cached_data(
     nflverse_provider: NflverseProvider | None = None,
     signal_provider: FreeSignalProvider | None = None,
+    vegas_provider: NflverseVegasProvider | None = None,
 ) -> bool:
     """Restore complete caches at startup without falling through to network."""
-    global DATA_SOURCE, SIGNAL_RECORDS
+    global DATA_SOURCE, SIGNAL_RECORDS, VEGAS_RESULT
     nflverse_provider = nflverse_provider or NflverseProvider()
     signal_provider = signal_provider or FreeSignalProvider()
+    vegas_provider = vegas_provider or NflverseVegasProvider()
+    try:
+        VEGAS_RESULT = vegas_provider.load_cached()
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        VEGAS_RESULT = VegasProviderResult(
+            None,
+            "invalid",
+            True,
+            "Cached Vegas data was invalid; refresh complete free data.",
+        )
     try:
         historical = nflverse_provider.load_cached()
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -226,6 +317,7 @@ def _restore_cached_data(
     if historical is None:
         SIGNAL_RECORDS = []
         _replace_session(demo_players())
+        _sync_session_vegas()
         DATA_SOURCE = _demo_data_source(warning)
         return False
     _replace_session(historical.players)
@@ -247,10 +339,12 @@ def _restore_cached_data(
         )
     if signals is None:
         SIGNAL_RECORDS = []
+        _sync_session_vegas()
         return False
     SIGNAL_RECORDS = signals.records
     enriched, matched = apply_signals(list(SESSION.players.values()), signals.records)
     _replace_session(enriched)
+    _sync_session_vegas()
     DATA_SOURCE = {
         **DATA_SOURCE,
         "signals": signals.sources,
@@ -297,8 +391,8 @@ def _load_preferences() -> dict[str, object] | None:
 def _state_payload() -> dict[str, object]:
     # While ESPN is connected its bridge already owns the live recommendation.
     # Avoid running a second Monte Carlo draft on every snapshot and dashboard poll.
-    payload = SESSION.as_dict(include_recommendations=not bool(ESPN_BRIDGE.state.get("connected")))
     source_health = _data_health()
+    payload = SESSION.as_dict(include_recommendations=not bool(ESPN_BRIDGE.state.get("connected")))
     espn_state = _espn_state_payload(source_health)
     payload["settings"] = {
         "league_profile": SESSION.config.profile_id,
@@ -472,7 +566,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        global DATA_SOURCE, OVERRIDE_SECONDS, PLAYER_PREFERENCES, SESSION, SIGNAL_RECORDS, SIMULATION_SAMPLES
+        global DATA_SOURCE, OVERRIDE_SECONDS, PLAYER_PREFERENCES, SESSION, SIGNAL_RECORDS, SIMULATION_SAMPLES, VEGAS_RESULT
         try:
             body = self._body()
             if self.path == "/api/pick":
@@ -506,6 +600,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     "warning": "Historical baseline only; not a current expert projection.",
                     "mapped_espn_ids": result.mapped_espn_ids,
                 }
+                _sync_session_vegas()
                 ESPN_BRIDGE.invalidate("Historical data changed; load current signals and sync ESPN again.")
             elif self.path == "/api/data/signals":
                 signal_source = dict(_data_health()["sources"])["signals"]
@@ -524,8 +619,17 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     "signals_matched": matched,
                     "signals_available": len(result.records),
                 }
+                _sync_session_vegas()
                 ESPN_BRIDGE.invalidate("Current signals changed; waiting for a fresh ESPN snapshot.")
+            elif self.path == "/api/data/vegas":
+                VEGAS_RESULT = NflverseVegasProvider().refresh(as_of=date.today())
+                _sync_session_vegas()
+                if VEGAS_RESULT.status == "refreshed":
+                    ESPN_BRIDGE.invalidate(
+                        "Vegas team context changed; waiting for a fresh ESPN snapshot."
+                    )
             elif self.path == "/api/espn/snapshot":
+                _sync_session_vegas()
                 ESPN_BRIDGE.ingest(
                     body,
                     list(SESSION.players.values()),
@@ -533,6 +637,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     SESSION.config,
                     SIGNAL_RECORDS,
                     _data_health(),
+                    vegas_snapshot=_usable_vegas_snapshot(),
                 )
             elif self.path == "/api/espn/pick-result":
                 ESPN_BRIDGE.record_pick_result(body)

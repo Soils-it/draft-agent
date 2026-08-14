@@ -5,7 +5,7 @@ import json
 import math
 import threading
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,8 +13,28 @@ from typing import Any
 from .config import LeagueConfig
 from .engine import DraftEngine
 from .models import Player
+from .providers import VegasSnapshot, apply_vegas_context
 from .scoring import projected_points
 from .signals import SignalRecord, apply_signals
+
+
+@dataclass(frozen=True)
+class _NeutralRankingContext:
+    """Validated ESPN inputs retained for an exact no-Vegas rerank."""
+
+    league_id: str
+    draft_id: str
+    is_mock: bool
+    overall_pick: int
+    decision_pick: int
+    user_slot: int
+    on_clock: bool
+    available: tuple[Player, ...]
+    roster: tuple[Player, ...]
+    engine: DraftEngine
+    next_pick: int
+    exposure_rates: dict[str, float]
+    exposure_limit: float
 
 
 class EspnDraftBridge:
@@ -43,6 +63,8 @@ class EspnDraftBridge:
         self.audit_path = audit_path
         self.max_audit_entries = max_audit_entries
         self._audit_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._vegas_ranking_context: _NeutralRankingContext | None = None
         self.decision_log = self._load_decision_log()
         for entry in self.decision_log:
             draft_id = str(entry.get("draft_id") or "")
@@ -70,25 +92,27 @@ class EspnDraftBridge:
 
     def invalidate(self, message: str) -> None:
         """Fail closed until a new browser snapshot is validated."""
-        self.state = {
-            "connected": False,
-            "mode": "shadow",
-            "can_submit": False,
-            "recommendations": [],
-            "prequeue_espn_player_ids": [],
-            "pending_espn_player_id": None,
-            "mock_command_ready": False,
-            "message": message,
-            "readiness": {
-                "ready": False,
-                "label": "NOT READY",
-                "reasons": [message],
-                "coverage": {},
-                "sources": {},
-            },
-            "decision_log": self.decision_summary(),
-            "mock_exposure_report": self.mock_exposure_summary(),
-        }
+        with self._state_lock:
+            self._vegas_ranking_context = None
+            self.state = {
+                "connected": False,
+                "mode": "shadow",
+                "can_submit": False,
+                "recommendations": [],
+                "prequeue_espn_player_ids": [],
+                "pending_espn_player_id": None,
+                "mock_command_ready": False,
+                "message": message,
+                "readiness": {
+                    "ready": False,
+                    "label": "NOT READY",
+                    "reasons": [message],
+                    "coverage": {},
+                    "sources": {},
+                },
+                "decision_log": self.decision_summary(),
+                "mock_exposure_report": self.mock_exposure_summary(),
+            }
 
     def _load_decision_log(self) -> list[dict[str, Any]]:
         if self.audit_path is None or not self.audit_path.exists():
@@ -634,7 +658,7 @@ class EspnDraftBridge:
             return (
                 EspnDraftBridge._with_position_ranks(historical),
                 1.0,
-                sum(bool(player.signals) for player in historical)
+                sum("consensus_rank" in player.signals for player in historical)
                 / max(len(historical), 1),
             )
         if not isinstance(raw_catalog, list) or not raw_catalog:
@@ -702,12 +726,80 @@ class EspnDraftBridge:
                         projected_points_override=projection,
                     )
                 )
-        signal_rate = sum(bool(player.signals) for player in merged) / len(merged)
+        signal_rate = sum(
+            "consensus_rank" in player.signals for player in merged
+        ) / len(merged)
         return (
             EspnDraftBridge._with_position_ranks(merged),
             enriched / len(merged),
             signal_rate,
         )
+
+    def neutralize_vegas_ranking(self) -> bool:
+        """Replace a Vegas-backed live result with an exact full neutral rerank.
+
+        The retained inputs have already passed ESPN catalog, mapping, roster, and
+        readiness validation. Ranking the complete available pool again avoids
+        trying to repair rounded top-five scores or overlooking a newly promoted
+        candidate outside the prior recommendation list.
+        """
+        with self._state_lock:
+            context = self._vegas_ranking_context
+            if context is None or not bool(self.state.get("connected")):
+                return False
+            ranked = context.engine.rank(
+                list(context.available),
+                list(context.roster),
+                context.decision_pick,
+                context.next_pick,
+                len(context.available),
+                exposure_rates=dict(context.exposure_rates),
+                exposure_limit=context.exposure_limit,
+            )
+            recommendations = ranked[:5]
+            if ranked:
+                try:
+                    self._record_decision(
+                        context.league_id,
+                        context.draft_id,
+                        context.is_mock,
+                        context.overall_pick,
+                        context.decision_pick,
+                        context.user_slot,
+                        context.on_clock,
+                        list(context.available),
+                        list(context.roster),
+                        ranked,
+                        context.engine,
+                    )
+                except OSError:
+                    # Recommendation safety must not depend on the optional audit.
+                    pass
+            self.state = {
+                **self.state,
+                "roster": [
+                    {**player.as_dict(), "projected_points": projected_points(player)}
+                    for player in context.roster
+                ],
+                "recommendations": recommendations,
+                "prequeue_espn_player_ids": [
+                    item["espn_id"] for item in recommendations
+                ],
+                "pending_espn_player_id": (
+                    recommendations[0]["espn_id"]
+                    if context.on_clock and recommendations
+                    else None
+                ),
+                "mock_command_ready": bool(context.on_clock and recommendations),
+                "decision_log": self.decision_summary(),
+                "mock_exposure_report": self.mock_exposure_summary(),
+                "message": (
+                    "Optional Vegas context became unusable; recommendations were "
+                    "fully reranked with a neutral Vegas contribution."
+                ),
+            }
+            self._vegas_ranking_context = None
+            return True
 
     def ingest(
         self,
@@ -717,6 +809,7 @@ class EspnDraftBridge:
         config: LeagueConfig,
         signal_records: list[SignalRecord] | None = None,
         source_status: dict[str, object] | None = None,
+        vegas_snapshot: VegasSnapshot | None = None,
     ) -> dict[str, object]:
         league_id = str(payload.get("league_id") or "").strip()
         draft_id = str(payload.get("draft_id") or "").strip()
@@ -773,6 +866,9 @@ class EspnDraftBridge:
             signal_rate = sum(
                 "consensus_rank" in player.signals for player in merged_players
             ) / len(merged_players)
+        # Team-market context is optional and never participates in readiness.
+        # This also strips inherited Vegas fields when no usable snapshot exists.
+        merged_players, _ = apply_vegas_context(merged_players, vegas_snapshot)
         by_espn_id = {
             player.external_ids["espn"]: player
             for player in merged_players
@@ -810,21 +906,42 @@ class EspnDraftBridge:
             if on_clock
             else self._next_user_pick(overall_pick, snapshot_config)
         )
+        next_pick = self._next_user_pick(decision_pick, snapshot_config)
+        exposure_limit = self.exposure_limit if is_mock else 0.0
         ranked = (
             engine.rank(
                 mapped_available,
                 mapped_roster,
                 decision_pick,
-                self._next_user_pick(decision_pick, snapshot_config),
+                next_pick,
                 len(mapped_available),
                 exposure_rates=exposure_rates,
-                exposure_limit=self.exposure_limit if is_mock else 0.0,
+                exposure_limit=exposure_limit,
             )
             if readiness["ready"]
             and decision_pick <= snapshot_config.teams * snapshot_config.roster_size
             else []
         )
         recommendations = ranked[:5]
+        vegas_ranking_context = None
+        if vegas_snapshot is not None and ranked:
+            neutral_available, _ = apply_vegas_context(mapped_available, None)
+            neutral_roster, _ = apply_vegas_context(mapped_roster, None)
+            vegas_ranking_context = _NeutralRankingContext(
+                league_id=league_id,
+                draft_id=draft_id,
+                is_mock=is_mock,
+                overall_pick=overall_pick,
+                decision_pick=decision_pick,
+                user_slot=user_slot,
+                on_clock=on_clock,
+                available=tuple(neutral_available),
+                roster=tuple(neutral_roster),
+                engine=copy.deepcopy(engine),
+                next_pick=next_pick,
+                exposure_rates=dict(exposure_rates),
+                exposure_limit=exposure_limit,
+            )
         if ranked:
             self._record_decision(
                 league_id,
@@ -839,7 +956,7 @@ class EspnDraftBridge:
                 ranked,
                 engine,
             )
-        self.state = {
+        new_state = {
             "connected": True,
             "mode": "shadow",
             "can_submit": False,
@@ -881,4 +998,7 @@ class EspnDraftBridge:
                 else str(readiness["reasons"][0])
             ),
         }
+        with self._state_lock:
+            self._vegas_ranking_context = vegas_ranking_context
+            self.state = new_state
         return self.state

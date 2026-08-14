@@ -50,14 +50,15 @@ click **Save and sync** once so the new model receives a fresh board. Profile
 detection is not inferred from ESPN yet because using the wrong 16- versus
 17-round layout would make turn ownership unsafe.
 
-On startup the server restores a complete, validated nflverse and free-signal
-cache without making a network request. Cache file modification times are used
-as the source timestamps. A missing, partial, oversized, malformed, or stale
-cache is reported truthfully as **NOT READY**; generated demo players are never
-labeled as loaded historical data. Use **Load complete free data** to refresh a
-missing or stale cache. Applying draft settings or resetting the local mock now
-keeps the active player pool, ESPN IDs, historical baselines, current signals,
-preferences, and strategy weights.
+On startup the server restores complete, validated nflverse and free-signal
+caches without making a network request. Cache file modification times are used
+as the required-source timestamps. A missing, partial, oversized, malformed, or
+stale required cache is reported truthfully as **NOT READY**; generated demo
+players are never labeled as loaded historical data. The separately cached
+Vegas source is optional and never changes READY/NOT READY. Use **Load complete
+free data** to refresh missing or stale data. Applying draft settings or
+resetting the local mock keeps the active player pool, ESPN IDs, historical
+baselines, current signals, preferences, and strategy weights.
 
 Use **Load complete free data** before opening a mock. The Player Data panel
 downloads the selected regular season from the
@@ -65,9 +66,27 @@ downloads the selected regular season from the
 It then adds current full-PPR 1-QB and Superflex/OP expert consensus plus identity mappings from
 [DynastyProcess open data](https://github.com/dynastyprocess/data), plus injury,
 depth-chart, and 24-hour add/drop signals from the [Sleeper API](https://docs.sleeper.com/).
+It also explicitly refreshes the public nflverse
+[schedules CSV](https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv)
+and [release timestamp](https://github.com/nflverse/nflverse-data/releases/download/schedules/timestamp.json).
+For future regular-season games with both lines, a positive `spread_line` means
+the home team is favored, so `home implied = (total_line + spread_line) / 2` and
+`away implied = (total_line - spread_line) / 2`. The app averages each team's
+own and opponent implied points and retains the lined-game count for auditability.
+This is team-level market context, not player props and not a replacement for
+projections. nflverse data is attributed to **nflverse (nflverse-data)** under
+the **CC BY 4.0** license.
+
 All downloads are size-bounded and cached under ignored `.cache/` directories.
-No paid API key is required. ESPN's own projected points remain the primary
-live-draft projection after the companion connects.
+The normalized Vegas snapshot and provenance live separately at
+`.cache/vegas/snapshot.json`. Both schedule and timestamp responses are fully
+validated in memory, including all-32-team coverage, before one atomic cache
+replacement. Missing, malformed, partial, oversized, or failed refreshes cannot
+replace the last-known-good snapshot. A still-fresh cached snapshot may be used
+with an explicit fallback error; after 48 hours it remains visible in source
+health but contributes exactly zero until refreshed. No paid API key is
+required. ESPN's own projected points remain the primary live-draft projection
+after the companion connects.
 
 ## Draft readiness
 
@@ -169,6 +188,8 @@ Each available player receives normalized component scores for:
 - likelihood the player is gone before the next selection
 - injury/availability, bye-week fit, nonlinear NFL-team/bye concentration, and
   Sleeper add/drop trends
+- a small, signed nflverse Vegas environment from team implied scoring for
+  QB/RB/WR/TE/K and opponent implied scoring for D/ST
 - low-weight rookie camp role from depth-chart order and practice participation
 - deterministic Monte Carlo value of this pick plus the next-turn options
 - upside
@@ -178,6 +199,15 @@ Each available player receives normalized component scores for:
 Every weight is adjustable in the dashboard, and every recommendation exposes
 its raw component scores and signed weighted contributions. The model is
 deterministic for the same draft state and settings.
+
+The Vegas component is centered on the 32-team league average and clamped to
+`[-1, 1]`. Higher team implied scoring is positive for QB/RB/WR/TE/K; lower
+opponent implied scoring is positive for D/ST. Its default weight is `0.03`, and
+the engine and API enforce an absolute `0.03` contribution cap even if a client
+submits a larger value. Unknown teams, missing player fields, incomplete team
+coverage, stale snapshots, and unavailable data are neutral (`0`) and do not
+change eligibility, roster deadlines, reach guardrails, projections, or
+otherwise-identical score ordering.
 
 Market rank blends ESPN's current draft-room order at 70% with external expert
 consensus at 30%. This keeps useful independent information without allowing a
