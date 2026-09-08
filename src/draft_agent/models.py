@@ -31,6 +31,7 @@ class Player:
             "risk": round(self.risk, 3),
             "status": self.status,
             "espn_id": self.external_ids.get("espn"),
+            "sleeper_id": self.external_ids.get("sleeper"),
             "signals": self.signals,
             "context": self.context,
         }

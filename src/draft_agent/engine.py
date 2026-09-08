@@ -55,8 +55,8 @@ class StrategyWeights:
 
 
 class DraftEngine:
-    # The standard profile replaces quarterbacks near QB12. Superflex moves
-    # that baseline to QB30 because 24 can start and others are held for depth.
+    # Twelve-team values are intentionally preserved. Sixteen-team demand is
+    # calibrated independently rather than scaling round/tier policy constants.
     replacement_rank = {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12}
     strong_starter_market = {"QB": 90, "TE": 60}
     espn_market_weight = 0.70
@@ -71,7 +71,12 @@ class DraftEngine:
     ):
         self.config = config
         self.replacement_rank = dict(type(self).replacement_rank)
-        if config.is_superflex:
+        if config.teams == 16:
+            self.replacement_rank.update(
+                {"QB": 40 if config.is_superflex else 16, "RB": 56, "WR": 48,
+                 "TE": 16, "K": 16, "DST": 16}
+            )
+        elif config.is_superflex:
             self.replacement_rank["QB"] = 30
         self.weights = weights or StrategyWeights()
         self.simulation_samples = simulation_samples

@@ -6,11 +6,12 @@ from dataclasses import dataclass, field
 STANDARD_PPR = "ppr_1qb"
 SUPERFLEX_REPLACES_FLEX = "ppr_superflex"
 FLEX_AND_SUPERFLEX = "ppr_flex_superflex"
+SUPPORTED_TEAM_COUNTS = (12, 16)
 
 
 LEAGUE_PROFILES: dict[str, dict[str, object]] = {
     STANDARD_PPR: {
-        "name": "12-team PPR · 1 QB",
+        "name": "PPR · 1 QB",
         "description": "Current model: one QB, one FLEX, and seven bench spots.",
         "starters": {
             "QB": 1,
@@ -25,7 +26,7 @@ LEAGUE_PROFILES: dict[str, dict[str, object]] = {
         "bench_slots": 7,
     },
     SUPERFLEX_REPLACES_FLEX: {
-        "name": "12-team PPR · Superflex",
+        "name": "PPR · Superflex",
         "description": "Superflex replaces the normal FLEX; seven bench spots.",
         "starters": {
             "QB": 1,
@@ -40,7 +41,7 @@ LEAGUE_PROFILES: dict[str, dict[str, object]] = {
         "bench_slots": 7,
     },
     FLEX_AND_SUPERFLEX: {
-        "name": "12-team PPR · FLEX + Superflex",
+        "name": "PPR · FLEX + Superflex",
         "description": "Keeps the normal FLEX and adds Superflex; seven bench spots.",
         "starters": {
             "QB": 1,
@@ -112,6 +113,18 @@ def league_config_for_profile(
 ) -> LeagueConfig:
     if profile_id not in LEAGUE_PROFILES:
         raise ValueError(f"unsupported league profile: {profile_id}")
+    if (
+        isinstance(teams, bool)
+        or not isinstance(teams, int)
+        or teams not in SUPPORTED_TEAM_COUNTS
+    ):
+        raise ValueError("teams must be 12 or 16")
+    if (
+        isinstance(user_slot, bool)
+        or not isinstance(user_slot, int)
+        or not 1 <= user_slot <= teams
+    ):
+        raise ValueError(f"user_slot must be between 1 and {teams}")
     profile = LEAGUE_PROFILES[profile_id]
     starters = dict(profile["starters"])
     bench_slots = int(profile["bench_slots"])
