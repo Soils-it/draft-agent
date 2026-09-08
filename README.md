@@ -1,24 +1,25 @@
 # ESPN Fantasy Draft Agent
 
-Local-first draft assistant for 12-team ESPN full-PPR redraft leagues. The
+Local-first draft assistant for 12- and 16-team full-PPR redraft leagues. The
 application provides a transparent ranking engine, snake-draft simulation, an
 adjustable strategy, free current/historical data, and a timed mock-draft
-auto-pick flow. Real-league automatic selection remains hard-blocked.
+auto-pick flow for ESPN mocks. Real-league automatic selection remains
+hard-blocked, and Sleeper support is always read-only.
 
 ## League profiles
 
-- 12 teams, snake draft
+- 12 or 16 teams, snake draft (12 is the default)
 - 7 bench slots and 1 IR slot
 - Full PPR with the custom passing, kicking, and D/ST scoring in
   `src/draft_agent/config.py`
 
-The dashboard includes three selectable formats:
+The dashboard includes three selectable formats at either supported team count:
 
-- **12-team PPR · 1 QB** (default): 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX,
+- **PPR · 1 QB** (default): 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX,
   1 K, 1 D/ST, and 7 bench spots (16 drafted players).
-- **12-team PPR · Superflex**: Superflex replaces the normal FLEX, with the
+- **PPR · Superflex**: Superflex replaces the normal FLEX, with the
   same seven bench spots (16 drafted players).
-- **12-team PPR · FLEX + Superflex**: keeps the normal FLEX and adds a
+- **PPR · FLEX + Superflex**: keeps the normal FLEX and adds a
   Superflex spot, with seven bench spots (17 drafted players).
 
 All profiles share the same scoring, player projections, current news/injury
@@ -49,6 +50,18 @@ mock and deliberately invalidates the old ESPN snapshot. In the companion,
 click **Save and sync** once so the new model receives a fresh board. Profile
 detection is not inferred from ESPN yet because using the wrong 16- versus
 17-round layout would make turn ownership unsafe.
+
+For a supported Sleeper draft, choose **16 teams**, **PPR · 1 QB**, and
+**Sleeper (read-only)**, then apply settings. Enter the public Sleeper draft ID
+and your public user ID and click **Sync Sleeper now**. Load complete free data
+first: the bridge requires a useful unique direct Sleeper-ID crosswalk before it
+will rank. Synchronization makes bounded, timed, unauthenticated HTTPS GET
+requests only when the button is clicked. It accepts exactly a 16-team snake
+draft with 16 rounds and the documented normal 1-QB roster, validates the user
+slot, roster mapping, and immutable contiguous pick history, and fails closed
+on any mismatch. The application has no Sleeper pick endpoint, timer, browser
+controller, credential handling, or submission path; make every Sleeper pick
+manually in Sleeper.
 
 On startup the server restores complete, validated nflverse and free-signal
 caches without making a network request. Cache file modification times are used

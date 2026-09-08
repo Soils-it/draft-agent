@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from collections import Counter
@@ -108,6 +109,52 @@ class LeagueProfileTests(unittest.TestCase):
             direct.rank(players, [], 6, 19, 10),
             selected.rank(players, [], 6, 19, 10),
         )
+
+    def test_team_count_validation_and_replacement_levels(self):
+        expected_standard = {
+            "QB": 16, "RB": 56, "WR": 48, "TE": 16, "K": 16, "DST": 16
+        }
+        for profile in (STANDARD_PPR, SUPERFLEX_REPLACES_FLEX, FLEX_AND_SUPERFLEX):
+            with self.subTest(profile=profile):
+                config = league_config_for_profile(profile, teams=16, user_slot=16)
+                self.assertEqual(config.teams, 16)
+                self.assertEqual(config.user_slot, 16)
+                expected = dict(expected_standard)
+                if config.is_superflex:
+                    expected["QB"] = 40
+                self.assertEqual(DraftEngine(config).replacement_rank, expected)
+        self.assertEqual(
+            DraftEngine(league_config_for_profile(STANDARD_PPR)).replacement_rank,
+            {"QB": 12, "RB": 42, "WR": 36, "TE": 12, "K": 12, "DST": 12},
+        )
+        for teams, slot in (
+            (8, 1), (14, 1), (12, 13), (16, 17), (12.0, 1), (16, 1.5)
+        ):
+            with self.subTest(teams=teams, slot=slot), self.assertRaises(ValueError):
+                league_config_for_profile(STANDARD_PPR, teams=teams, user_slot=slot)
+
+    def test_sixteen_team_mock_completes_legally_at_snake_boundaries(self):
+        players = demo_players()
+        for slot in (1, 8, 16):
+            with self.subTest(slot=slot):
+                config = league_config_for_profile(
+                    STANDARD_PPR, teams=16, user_slot=slot
+                )
+                session = DraftSession(players, config)
+                session.engine.simulation_samples = 20
+                self.assertEqual(
+                    [session.team_for_pick(pick) for pick in (1, 16, 17, 32)],
+                    [1, 16, 16, 1],
+                )
+                first_pick = session.current_pick
+                expected_first = {1: 1, 8: 8, 16: 16}[slot]
+                self.assertEqual(first_pick, expected_first)
+                while not session.is_complete:
+                    recommendations = session.recommendations()
+                    self.assertTrue(recommendations)
+                    session.make_user_pick(str(recommendations[0]["id"]), "test")
+                self.assertEqual(session.current_pick, 257)
+                self.assertEqual(len(session.user_roster()), 16)
 
     def test_standard_round_five_fixture_and_deadlines_match_origin_main(self):
         engine = DraftEngine(
@@ -971,6 +1018,8 @@ class LeagueProfileIntegrationTests(unittest.TestCase):
         original_samples = server.SIMULATION_SAMPLES
         original_path = server.RUNTIME_SETTINGS_PATH
         original_bridge_state = server.ESPN_BRIDGE.state
+        original_sleeper_state = server.SLEEPER_BRIDGE.state
+        original_platform = server.LIVE_PLATFORM
         try:
             with TemporaryDirectory() as directory:
                 server.RUNTIME_SETTINGS_PATH = Path(directory) / "settings.json"
@@ -1006,12 +1055,109 @@ class LeagueProfileIntegrationTests(unittest.TestCase):
                 state = server._state_payload()
                 self.assertEqual(state["settings"]["roster_size"], 17)
                 self.assertEqual(len(state["league_profiles"]), 3)
+                self.assertEqual(state["live"]["provider"], "espn")
         finally:
             server.SESSION = original_session
             server.OVERRIDE_SECONDS = original_override
             server.SIMULATION_SAMPLES = original_samples
             server.RUNTIME_SETTINGS_PATH = original_path
             server.ESPN_BRIDGE.state = original_bridge_state
+            server.SLEEPER_BRIDGE.state = original_sleeper_state
+            server.LIVE_PLATFORM = original_platform
+
+    def test_team_slot_and_platform_settings_are_atomic_and_invalidate_bridges(self):
+        original_session = server.SESSION
+        original_override = server.OVERRIDE_SECONDS
+        original_samples = server.SIMULATION_SAMPLES
+        original_platform = server.LIVE_PLATFORM
+        original_preferences = copy.deepcopy(server.PLAYER_PREFERENCES)
+        original_path = server.RUNTIME_SETTINGS_PATH
+        original_espn_state = server.ESPN_BRIDGE.state
+        original_sleeper_state = server.SLEEPER_BRIDGE.state
+        try:
+            with TemporaryDirectory() as directory:
+                server.RUNTIME_SETTINGS_PATH = Path(directory) / "settings.json"
+                loaded = [
+                    Player(
+                        "loaded", "Loaded Player", "AAA", "WR", 1,
+                        external_ids={"espn": "e-1", "sleeper": "s-1"},
+                        signals={"consensus_rank": 1},
+                    )
+                ]
+                server.SESSION = DraftSession(
+                    loaded, league_config_for_profile(STANDARD_PPR)
+                )
+                server.SESSION.engine.weights.upside = 0.77
+                server.PLAYER_PREFERENCES = {
+                    "prefer": ["Loaded Player"], "fade": [], "never": [],
+                    "mock_exposure_limit": 0,
+                }
+                server.OVERRIDE_SECONDS = 20
+                server.SIMULATION_SAMPLES = 200
+                server.LIVE_PLATFORM = "espn"
+                server.ESPN_BRIDGE.state = {"connected": True, "recommendations": [1]}
+                server.SLEEPER_BRIDGE.state = {"connected": True, "recommendations": [2]}
+
+                before = (
+                    server.SESSION,
+                    server.OVERRIDE_SECONDS,
+                    server.SIMULATION_SAMPLES,
+                    server.LIVE_PLATFORM,
+                    copy.deepcopy(server.ESPN_BRIDGE.state),
+                    copy.deepcopy(server.SLEEPER_BRIDGE.state),
+                )
+                for values in (
+                    {"teams": 14},
+                    {"teams": 12, "user_slot": 16},
+                    {"teams": 12.5, "user_slot": 6},
+                    {"teams": 12, "user_slot": 6.5},
+                ):
+                    with self.subTest(values=values), self.assertRaises(ValueError):
+                        server.apply_settings(values)
+                    self.assertIs(server.SESSION, before[0])
+                    self.assertEqual(
+                        (
+                            server.OVERRIDE_SECONDS,
+                            server.SIMULATION_SAMPLES,
+                            server.LIVE_PLATFORM,
+                            server.ESPN_BRIDGE.state,
+                            server.SLEEPER_BRIDGE.state,
+                        ),
+                        before[1:],
+                    )
+
+                server.apply_settings(
+                    {
+                        "teams": 16,
+                        "user_slot": 16,
+                        "live_platform": "sleeper",
+                        "override_seconds": 30,
+                        "simulation_samples": 50,
+                    }
+                )
+                player = server.SESSION.players["loaded"]
+                self.assertEqual(server.SESSION.config.teams, 16)
+                self.assertEqual(server.SESSION.config.user_slot, 16)
+                self.assertEqual(server.LIVE_PLATFORM, "sleeper")
+                self.assertEqual(player.external_ids, {"espn": "e-1", "sleeper": "s-1"})
+                self.assertEqual(player.signals, {"consensus_rank": 1})
+                self.assertEqual(server.SESSION.engine.weights.upside, 0.77)
+                self.assertEqual(server.SESSION.engine.simulation_samples, 50)
+                self.assertIn("loaded player", server.SESSION.engine.prefer_names)
+                self.assertFalse(server.ESPN_BRIDGE.state["connected"])
+                self.assertFalse(server.SLEEPER_BRIDGE.state["connected"])
+                saved = json.loads(server.RUNTIME_SETTINGS_PATH.read_text(encoding="utf-8"))
+                self.assertEqual(saved["teams"], 16)
+                self.assertEqual(saved["live_platform"], "sleeper")
+        finally:
+            server.SESSION = original_session
+            server.OVERRIDE_SECONDS = original_override
+            server.SIMULATION_SAMPLES = original_samples
+            server.LIVE_PLATFORM = original_platform
+            server.PLAYER_PREFERENCES = original_preferences
+            server.RUNTIME_SETTINGS_PATH = original_path
+            server.ESPN_BRIDGE.state = original_espn_state
+            server.SLEEPER_BRIDGE.state = original_sleeper_state
 
 
 if __name__ == "__main__":

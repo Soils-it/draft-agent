@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .config import (
     LEAGUE_PROFILES,
+    SUPPORTED_TEAM_COUNTS,
     LeagueConfig,
     league_config_for_profile,
     league_profiles_payload,
@@ -35,6 +36,7 @@ from .providers import (
 )
 from .signals import FreeSignalProvider, SignalRecord, apply_signals
 from .session import DraftSession
+from .sleeper import SleeperDraftBridge
 
 
 SESSION = DraftSession(demo_players())
@@ -69,6 +71,9 @@ PREFERENCE_PATH = Path(".cache/player_preferences.json")
 RUNTIME_SETTINGS_PATH = Path(".cache/draft_settings.json")
 DECISION_LOG_PATH = Path(".cache/draft_decisions.json")
 ESPN_BRIDGE = EspnDraftBridge(DECISION_LOG_PATH)
+SLEEPER_BRIDGE = SleeperDraftBridge()
+LIVE_PLATFORM = "espn"
+LIVE_PLATFORMS = ("espn", "sleeper")
 
 
 def _configure_session(session: DraftSession) -> None:
@@ -389,15 +394,46 @@ def _load_preferences() -> dict[str, object] | None:
 
 
 def _state_payload() -> dict[str, object]:
-    # While ESPN is connected its bridge already owns the live recommendation.
+    # A connected live bridge owns the recommendation for its provider only.
     # Avoid running a second Monte Carlo draft on every snapshot and dashboard poll.
     source_health = _data_health()
-    payload = SESSION.as_dict(include_recommendations=not bool(ESPN_BRIDGE.state.get("connected")))
+    active_connected = bool(
+        (ESPN_BRIDGE.state if LIVE_PLATFORM == "espn" else SLEEPER_BRIDGE.state).get(
+            "connected"
+        )
+    )
+    payload = SESSION.as_dict(include_recommendations=not active_connected)
     espn_state = _espn_state_payload(source_health)
+    espn_state["provider"] = "espn"
+    sleeper_state = copy.deepcopy(SLEEPER_BRIDGE.state)
+    sleeper_readiness = dict(sleeper_state.get("readiness", {}))
+    sleeper_reasons = list(sleeper_readiness.get("reasons", []))
+    for reason in source_health.get("reasons", []):
+        if reason not in sleeper_reasons:
+            sleeper_reasons.append(reason)
+    sleeper_ready = bool(sleeper_readiness.get("ready")) and bool(
+        source_health.get("ready")
+    )
+    sleeper_readiness.update(
+        {
+            "ready": sleeper_ready,
+            "label": "READY" if sleeper_ready else "NOT READY",
+            "reasons": sleeper_reasons,
+            "sources": {
+                **dict(source_health.get("sources", {})),
+                **dict(sleeper_readiness.get("sources", {})),
+            },
+        }
+    )
+    sleeper_state["readiness"] = sleeper_readiness
+    if not sleeper_ready:
+        sleeper_state["recommendations"] = []
     payload["settings"] = {
         "league_profile": SESSION.config.profile_id,
+        "teams": SESSION.config.teams,
         "roster_size": SESSION.config.roster_size,
         "user_slot": SESSION.config.user_slot,
+        "live_platform": LIVE_PLATFORM,
         "override_seconds": OVERRIDE_SECONDS,
         "simulation_samples": SESSION.engine.simulation_samples,
     }
@@ -408,7 +444,9 @@ def _state_payload() -> dict[str, object]:
     }
     payload["preferences"] = PLAYER_PREFERENCES
     payload["espn"] = espn_state
-    payload["readiness"] = espn_state["readiness"]
+    payload["sleeper"] = sleeper_state
+    payload["live"] = espn_state if LIVE_PLATFORM == "espn" else sleeper_state
+    payload["readiness"] = payload["live"]["readiness"]
     return payload
 
 
@@ -416,9 +454,20 @@ def validate_settings(
     values: dict[str, Any], current_slot: int, current_seconds: int, teams: int,
     current_samples: int = 200,
 ) -> tuple[int, int, int]:
-    slot = int(values.get("user_slot", current_slot))
-    seconds = int(values.get("override_seconds", current_seconds))
-    samples = int(values.get("simulation_samples", current_samples))
+    def integer(value: object, label: str) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{label} must be an integer")
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} must be an integer") from exc
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{label} must be an integer")
+        return parsed
+
+    slot = integer(values.get("user_slot", current_slot), "user_slot")
+    seconds = integer(values.get("override_seconds", current_seconds), "override_seconds")
+    samples = integer(values.get("simulation_samples", current_samples), "simulation_samples")
     if not 1 <= slot <= teams:
         raise ValueError(f"user_slot must be between 1 and {teams}")
     if not 5 <= seconds <= 120:
@@ -435,10 +484,39 @@ def _validate_profile(values: dict[str, Any], current_profile: str) -> str:
     return profile_id
 
 
+def _validate_teams(values: dict[str, Any], current_teams: int) -> int:
+    raw_teams = values.get("teams", current_teams)
+    if isinstance(raw_teams, bool):
+        raise ValueError("teams must be 12 or 16")
+    try:
+        teams = int(raw_teams)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("teams must be 12 or 16") from exc
+    if isinstance(raw_teams, float) and not raw_teams.is_integer():
+        raise ValueError("teams must be 12 or 16")
+    if teams not in SUPPORTED_TEAM_COUNTS:
+        raise ValueError("teams must be 12 or 16")
+    return teams
+
+
+def _validate_live_platform(values: dict[str, Any], current_platform: str) -> str:
+    platform = str(values.get("live_platform", current_platform)).strip().lower()
+    if platform not in LIVE_PLATFORMS:
+        raise ValueError("live_platform must be espn or sleeper")
+    return platform
+
+
+def _invalidate_live(message: str) -> None:
+    ESPN_BRIDGE.invalidate(message)
+    SLEEPER_BRIDGE.invalidate(message)
+
+
 def _runtime_settings_payload() -> dict[str, object]:
     return {
         "league_profile": SESSION.config.profile_id,
+        "teams": SESSION.config.teams,
         "user_slot": SESSION.config.user_slot,
+        "live_platform": LIVE_PLATFORM,
         "override_seconds": OVERRIDE_SECONDS,
         "simulation_samples": SESSION.engine.simulation_samples,
     }
@@ -467,16 +545,20 @@ def _load_runtime_settings() -> dict[str, object] | None:
         if not isinstance(payload, dict):
             return None
         profile_id = _validate_profile(payload, SESSION.config.profile_id)
+        teams = _validate_teams(payload, SESSION.config.teams)
+        live_platform = _validate_live_platform(payload, LIVE_PLATFORM)
         slot, seconds, samples = validate_settings(
             payload,
             SESSION.config.user_slot,
             OVERRIDE_SECONDS,
-            SESSION.config.teams,
+            teams,
             SESSION.engine.simulation_samples,
         )
         return {
             "league_profile": profile_id,
+            "teams": teams,
             "user_slot": slot,
+            "live_platform": live_platform,
             "override_seconds": seconds,
             "simulation_samples": samples,
         }
@@ -490,24 +572,31 @@ def apply_settings(
     persist: bool = True,
     invalidate: bool = True,
 ) -> None:
-    global OVERRIDE_SECONDS, SIMULATION_SAMPLES
+    global LIVE_PLATFORM, OVERRIDE_SECONDS, SIMULATION_SAMPLES
     previous_profile = SESSION.config.profile_id
+    previous_teams = SESSION.config.teams
     previous_slot = SESSION.config.user_slot
     previous_samples = SESSION.engine.simulation_samples
+    previous_platform = LIVE_PLATFORM
     profile_id = _validate_profile(values, previous_profile)
-    slot, OVERRIDE_SECONDS, SIMULATION_SAMPLES = validate_settings(
+    teams = _validate_teams(values, previous_teams)
+    platform = _validate_live_platform(values, previous_platform)
+    slot, seconds, samples = validate_settings(
         values,
         previous_slot,
         OVERRIDE_SECONDS,
-        SESSION.config.teams,
+        teams,
         previous_samples,
     )
-    if profile_id != previous_profile:
+    OVERRIDE_SECONDS = seconds
+    SIMULATION_SAMPLES = samples
+    LIVE_PLATFORM = platform
+    if profile_id != previous_profile or teams != previous_teams:
         _replace_session(
             config=league_config_for_profile(
                 profile_id,
                 user_slot=slot,
-                teams=SESSION.config.teams,
+                teams=teams,
             )
         )
     elif slot != previous_slot:
@@ -518,10 +607,14 @@ def apply_settings(
         _save_runtime_settings()
     if invalidate and (
         profile_id != previous_profile
+        or teams != previous_teams
         or slot != previous_slot
         or SIMULATION_SAMPLES != previous_samples
+        or platform != previous_platform
     ):
-        ESPN_BRIDGE.invalidate("Draft settings changed; waiting for a fresh ESPN snapshot.")
+        _invalidate_live(
+            "Draft settings or live platform changed; waiting for a fresh live sync."
+        )
 
 
 class DraftRequestHandler(BaseHTTPRequestHandler):
@@ -573,7 +666,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 SESSION.make_user_pick(str(body["player_id"]), str(body.get("source", "manual")))
             elif self.path == "/api/weights":
                 SESSION.engine.weights.update(body)
-                ESPN_BRIDGE.invalidate("Strategy weights changed; waiting for a fresh ESPN snapshot.")
+                _invalidate_live("Strategy weights changed; waiting for a fresh live sync.")
             elif self.path == "/api/preferences":
                 PLAYER_PREFERENCES = validate_preferences(body)
                 _save_preferences()
@@ -581,7 +674,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 ESPN_BRIDGE.configure_mock_exposure(
                     int(PLAYER_PREFERENCES["mock_exposure_limit"])
                 )
-                ESPN_BRIDGE.invalidate("Player preferences changed; waiting for a fresh ESPN snapshot.")
+                _invalidate_live("Player preferences changed; waiting for a fresh live sync.")
             elif self.path == "/api/settings":
                 apply_settings(body)
             elif self.path == "/api/data/nflverse":
@@ -601,7 +694,7 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     "mapped_espn_ids": result.mapped_espn_ids,
                 }
                 _sync_session_vegas()
-                ESPN_BRIDGE.invalidate("Historical data changed; load current signals and sync ESPN again.")
+                _invalidate_live("Historical data changed; load current signals and sync again.")
             elif self.path == "/api/data/signals":
                 signal_source = dict(_data_health()["sources"])["signals"]
                 refresh = bool(body.get("refresh", False)) or not bool(
@@ -620,15 +713,15 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     "signals_available": len(result.records),
                 }
                 _sync_session_vegas()
-                ESPN_BRIDGE.invalidate("Current signals changed; waiting for a fresh ESPN snapshot.")
+                _invalidate_live("Current signals changed; waiting for a fresh live sync.")
             elif self.path == "/api/data/vegas":
                 VEGAS_RESULT = NflverseVegasProvider().refresh(as_of=date.today())
                 _sync_session_vegas()
                 if VEGAS_RESULT.status == "refreshed":
-                    ESPN_BRIDGE.invalidate(
-                        "Vegas team context changed; waiting for a fresh ESPN snapshot."
-                    )
+                    _invalidate_live("Vegas team context changed; waiting for a fresh live sync.")
             elif self.path == "/api/espn/snapshot":
+                if LIVE_PLATFORM != "espn":
+                    raise ValueError("Select ESPN as the live platform before syncing")
                 _sync_session_vegas()
                 ESPN_BRIDGE.ingest(
                     body,
@@ -640,7 +733,23 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                     vegas_snapshot=_usable_vegas_snapshot(),
                 )
             elif self.path == "/api/espn/pick-result":
+                if LIVE_PLATFORM != "espn":
+                    raise ValueError("Select ESPN as the live platform before reporting picks")
                 ESPN_BRIDGE.record_pick_result(body)
+            elif self.path == "/api/sleeper/sync":
+                if LIVE_PLATFORM != "sleeper":
+                    raise ValueError("Select Sleeper as the live platform before syncing")
+                health = _data_health()
+                if not health["ready"]:
+                    reason = next(iter(health.get("reasons", [])), "load complete free data")
+                    raise ValueError(f"Complete free player data is not ready: {reason}")
+                SLEEPER_BRIDGE.synchronize(
+                    body.get("draft_id"),
+                    body.get("user_id"),
+                    list(SESSION.players.values()),
+                    SESSION.engine,
+                    SESSION.config,
+                )
             elif self.path == "/api/reset":
                 _replace_session()
             else:
@@ -648,6 +757,13 @@ class DraftRequestHandler(BaseHTTPRequestHandler):
                 return
             self._json(_state_payload())
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            if self.path.startswith("/api/data/"):
+                _invalidate_live(f"Refresh failed; live recommendations invalidated: {exc}")
+            elif self.path == "/api/sleeper/sync":
+                message = str(exc)
+                if not message.startswith("Sleeper sync failed:"):
+                    message = f"Sleeper sync failed: {message}"
+                SLEEPER_BRIDGE.invalidate(message)
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def log_message(self, format: str, *args: object) -> None:
